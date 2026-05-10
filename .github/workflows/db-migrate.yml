@@ -1,29 +1,57 @@
-name: Apply Supabase migrations
+name: DB migrations
 
-# Auto-applies any new migration files in todo-app/supabase/migrations/
-# whenever they're pushed to the main branch.
+# Two-stage pipeline:
+#   validate — runs on PRs and pushes; lints migrations.
+#   apply    — only on push to main; backup → diff → push → verify.
 #
-# Required GitHub Actions secrets (Settings → Secrets and variables → Actions):
-#   SUPABASE_ACCESS_TOKEN  Personal access token (account → Access tokens)
-#   SUPABASE_PROJECT_ID    The project ref, e.g. abcd1234efgh
-#   SUPABASE_DB_PASSWORD   The database password you set when creating the project
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_ACCESS_TOKEN  Personal access token
+#   SUPABASE_PROJECT_ID    Project ref
+#   SUPABASE_DB_PASSWORD   DB password
+# See todo-app/MIGRATIONS.md for the full playbook.
 
 on:
+  pull_request:
+    paths:
+      - "todo-app/supabase/migrations/**"
+      - "todo-app/scripts/migration-lint.mjs"
   push:
     branches: [main]
     paths:
       - "todo-app/supabase/migrations/**"
+      - "todo-app/scripts/migration-lint.mjs"
   workflow_dispatch:
 
+# Serialise apply runs so two pushes to main don't race against each other.
+concurrency:
+  group: db-migrate-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: todo-app
+
 jobs:
-  migrate:
+  validate:
+    name: Validate
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: todo-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Lint migrations
+        run: node scripts/migration-lint.mjs
+
+  apply:
+    name: Apply
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,10 +59,58 @@ jobs:
         with:
           version: latest
 
-      - name: Link to project
+      - name: Link project
         run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
-        env:
-          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
 
-      - name: Push migrations
+      - name: Pre-deploy backup (schema + data)
+        run: |
+          set -euo pipefail
+          mkdir -p backups
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          PREFIX="backups/${STAMP}-${GITHUB_SHA}"
+          # Run schema + data dumps in parallel — independent network round-trips.
+          supabase db dump --linked -f "${PREFIX}-schema.sql" &
+          supabase db dump --linked --data-only -f "${PREFIX}-data.sql" &
+          wait
+          ls -lh backups/
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.sha }}
+          path: todo-app/backups/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Plan (diff vs current DB)
+        run: |
+          set +e
+          DIFF_OUT=$(supabase db diff --linked --schema public 2>&1)
+          DIFF_EXIT=$?
+          {
+            echo "## Migration plan"
+            echo
+            echo "Diff exit code: \`${DIFF_EXIT}\`"
+            echo
+            echo '```sql'
+            echo "${DIFF_OUT:-(no schema diff)}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Don't fail the job for diff-only issues — apply step is the gate.
+
+      - name: Apply migrations
         run: supabase db push
+
+      - name: Verify invariants
+        env:
+          PGPASSWORD: ${{ env.SUPABASE_DB_PASSWORD }}
+        run: |
+          # Pass connection params discretely so special chars in the password
+          # never need URL-encoding.
+          psql \
+            -h "db.${SUPABASE_PROJECT_ID}.supabase.co" \
+            -p 5432 \
+            -U postgres \
+            -d postgres \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/invariants.sql
