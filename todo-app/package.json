@@ -6,11 +6,15 @@
   "type": "module",
   "scripts": {
     "dev": "npx --yes serve . -l 5173",
-    "db:link": "supabase link --project-ref %SUPABASE_PROJECT_REF%",
-    "db:push": "supabase db push",
-    "db:diff": "supabase db diff --linked",
+    "db:link": "node scripts/db-link.mjs",
+    "db:new": "supabase migration new",
+    "db:lint": "node scripts/migration-lint.mjs",
+    "db:plan": "supabase db diff --linked --schema public",
+    "db:push": "npm run db:lint && supabase db push",
     "db:reset": "supabase db reset --linked",
-    "db:new": "supabase migration new"
+    "db:dump": "npm run db:dump:schema && npm run db:dump:data",
+    "db:dump:schema": "supabase db dump --linked -f backup-schema.sql",
+    "db:dump:data": "supabase db dump --linked --data-only -f backup-data.sql"
   },
   "devDependencies": {
     "supabase": "^1.200.3"

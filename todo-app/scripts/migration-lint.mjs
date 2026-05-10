@@ -22,7 +22,7 @@ const RULES = [
   { id: "truncate",     pattern: /\btruncate\b/i,                                why: "TRUNCATE wipes all rows." },
   { id: "alter-type",   pattern: /\balter\s+(?:column|table)[\s\S]*?\btype\b/i,  why: "ALTER ... TYPE may rewrite the table; bad casts lose data." },
   { id: "set-not-null", pattern: /\bset\s+not\s+null\b/i,                        why: "SET NOT NULL fails if existing NULLs aren't backfilled first." },
-  { id: "rename",       pattern: /\brename\b/i,                                  why: "RENAME breaks running clients reading the old name." },
+  { id: "rename",       pattern: /\balter\s+(?:table|view|materialized\s+view)\s+\S+[\s\S]*?\brename\b/i, why: "RENAME on tables/columns breaks running clients reading the old name." },
 ];
 
 // Per-statement rules (run after splitting on `;`).
@@ -55,11 +55,14 @@ function statements(sql) {
 }
 
 function pragmasIn(raw) {
-  const set = new Set();
-  for (const m of raw.matchAll(/--\s*pragma:\s*allow-([\w-]+)/gi)) {
-    set.add(m[1].toLowerCase());
+  // Map<id, reason|null>. A pragma without `reason="..."` stores null and the
+  // lint reports it as an error if the pragma actually downgrades a rule.
+  const map = new Map();
+  const re = /--\s*pragma:\s*allow-([\w-]+)(?:[^\n]*?reason\s*=\s*"([^"]+)")?/gi;
+  for (const m of raw.matchAll(re)) {
+    map.set(m[1].toLowerCase(), m[2] ?? null);
   }
-  return set;
+  return map;
 }
 
 function scan(file, raw) {
@@ -69,11 +72,21 @@ function scan(file, raw) {
   const issues = [];
 
   const flag = (id, why) => {
-    issues.push({
-      rule: id,
-      why,
-      kind: blanket || allowed.has(id) ? "warn" : "error",
-    });
+    const downgraded = blanket || allowed.has(id);
+    if (!downgraded) {
+      issues.push({ rule: id, why, kind: "error" });
+      return;
+    }
+    const reason = allowed.has(id) ? allowed.get(id) : allowed.get("destructive");
+    if (!reason) {
+      issues.push({
+        rule: id,
+        why: `${why} pragma allow-${id} requires reason="..."`,
+        kind: "error",
+      });
+    } else {
+      issues.push({ rule: id, why: `${why} (allowed: ${reason})`, kind: "warn" });
+    }
   };
 
   for (const r of RULES) {

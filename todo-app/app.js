@@ -206,13 +206,10 @@ async function deleteTodo(id) {
 // onAuthStateChange fires INITIAL_SESSION for the persisted session, so a
 // separate getSession() call would double-load on first render. Just listen.
 applyAuthCopy();
-let lastUserId = null;
 supabase.auth.onAuthStateChange((_event, session) => {
   const userId = session?.user?.id ?? null;
+  if (userId === currentUserId) return;
   currentUserId = userId;
-
-  if (userId === lastUserId) return;
-  lastUserId = userId;
 
   if (userId) {
     setView(true);
@@ -221,5 +218,8 @@ supabase.auth.onAuthStateChange((_event, session) => {
     todos = [];
     renderTodos();
     setView(false);
+    mode = "signin";
+    applyAuthCopy();
+    setMsg(authMsg, "");
   }
 });
