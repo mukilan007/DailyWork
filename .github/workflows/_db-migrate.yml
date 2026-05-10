@@ -1,0 +1,116 @@
+name: DB migrate (reusable)
+
+# Reusable workflow callers can include with:
+#
+#   jobs:
+#     migrate:
+#       uses: ./.github/workflows/_db-migrate.yml
+#       with:
+#         app_dir: daily-rhythm
+#       secrets: inherit
+#
+# Two stages:
+#   validate — runs always; lints migrations.
+#   apply    — runs only on push to default branch; backup → diff → push → verify.
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        description: "App directory containing supabase/migrations and supabase/tests/invariants.sql"
+        required: true
+        type: string
+
+concurrency:
+  group: db-migrate-${{ inputs.app_dir }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate (${{ inputs.app_dir }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.app_dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Lint migrations
+        run: node ../tools/db/migration-lint.mjs
+
+  apply:
+    name: Apply (${{ inputs.app_dir }})
+    needs: validate
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.app_dir }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Pre-deploy backup (schema + data)
+        run: |
+          set -euo pipefail
+          mkdir -p backups
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          PREFIX="backups/${STAMP}-${GITHUB_SHA}"
+          # Run schema + data dumps in parallel — independent network round-trips.
+          supabase db dump --linked -f "${PREFIX}-schema.sql" &
+          supabase db dump --linked --data-only -f "${PREFIX}-data.sql" &
+          wait
+          ls -lh backups/
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ inputs.app_dir }}-${{ github.sha }}
+          path: ${{ inputs.app_dir }}/backups/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Plan (diff vs current DB)
+        run: |
+          set +e
+          DIFF_OUT=$(supabase db diff --linked --schema public 2>&1)
+          DIFF_EXIT=$?
+          {
+            echo "## Migration plan (${{ inputs.app_dir }})"
+            echo
+            echo "Diff exit code: \`${DIFF_EXIT}\`"
+            echo
+            echo '```sql'
+            echo "${DIFF_OUT:-(no schema diff)}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Don't fail the job for diff-only issues — apply step is the gate.
+
+      - name: Apply migrations
+        run: supabase db push
+
+      - name: Verify invariants
+        env:
+          PGPASSWORD: ${{ env.SUPABASE_DB_PASSWORD }}
+        run: |
+          # Pass connection params discretely so special chars in the password
+          # never need URL-encoding.
+          psql \
+            -h "db.${SUPABASE_PROJECT_ID}.supabase.co" \
+            -p 5432 \
+            -U postgres \
+            -d postgres \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/invariants.sql

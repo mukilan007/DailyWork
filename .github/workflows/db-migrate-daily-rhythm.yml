@@ -1,31 +1,31 @@
-name: DB migrations (todo-app)
+name: DB migrations (daily-rhythm)
 
 # Thin caller — all logic lives in `_db-migrate.yml`.
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #   SUPABASE_ACCESS_TOKEN  Personal access token
 #   SUPABASE_PROJECT_ID    Project ref
 #   SUPABASE_DB_PASSWORD   DB password
-# See todo-app/MIGRATIONS.md and tools/db/README.md for the playbook.
+# See daily-rhythm/MIGRATIONS.md and tools/db/README.md for the playbook.
 
 on:
   pull_request:
     paths:
-      - "todo-app/supabase/migrations/**"
+      - "daily-rhythm/supabase/migrations/**"
       - "tools/db/**"
       - ".github/workflows/_db-migrate.yml"
-      - ".github/workflows/db-migrate.yml"
+      - ".github/workflows/db-migrate-daily-rhythm.yml"
   push:
-    branches: [main, master]
+    branches: [master, main]
     paths:
-      - "todo-app/supabase/migrations/**"
+      - "daily-rhythm/supabase/migrations/**"
       - "tools/db/**"
       - ".github/workflows/_db-migrate.yml"
-      - ".github/workflows/db-migrate.yml"
+      - ".github/workflows/db-migrate-daily-rhythm.yml"
   workflow_dispatch:
 
 jobs:
   migrate:
     uses: ./.github/workflows/_db-migrate.yml
     with:
-      app_dir: todo-app
+      app_dir: daily-rhythm
     secrets: inherit

@@ -5,10 +5,10 @@
   "description": "Tiny todo app — static frontend + Supabase backend.",
   "type": "module",
   "scripts": {
-    "dev": "npx --yes serve . -l 5173",
-    "db:link": "node scripts/db-link.mjs",
+    "dev": "npx --yes serve . -l 3000",
+    "db:link": "node ../tools/db/db-link.mjs",
     "db:new": "supabase migration new",
-    "db:lint": "node scripts/migration-lint.mjs",
+    "db:lint": "node ../tools/db/migration-lint.mjs",
     "db:plan": "supabase db diff --linked --schema public",
     "db:push": "npm run db:lint && supabase db push",
     "db:reset": "supabase db reset --linked",
@@ -17,6 +17,6 @@
     "db:dump:data": "supabase db dump --linked --data-only -f backup-data.sql"
   },
   "devDependencies": {
-    "supabase": "^1.200.3"
+    "supabase": "^2.98.2"
   }
 }
