@@ -1,0 +1,4 @@
+# Local project name used by the Supabase CLI. Doesn't have to match anything
+# remote — `supabase link --project-ref <ref>` is what actually pairs this
+# folder with your hosted project.
+project_id = "tasks-app"

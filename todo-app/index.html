@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tasks</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Tasks</h1>
+      <button id="signOutBtn" class="ghost hidden">Sign out</button>
+    </header>
+
+    <main>
+      <!-- Auth view -->
+      <section id="authView" class="card">
+        <h2 id="authTitle">Sign in</h2>
+        <form id="authForm">
+          <label>
+            Email
+            <input type="email" id="email" required autocomplete="email" />
+          </label>
+          <label>
+            Password
+            <input type="password" id="password" required minlength="6" autocomplete="current-password" />
+          </label>
+          <button type="submit" id="authSubmit">Sign in</button>
+        </form>
+        <p class="muted">
+          <span id="authToggleText">No account?</span>
+          <button type="button" id="authToggle" class="link">Create one</button>
+        </p>
+        <p id="authMsg" class="msg" role="alert" aria-live="polite"></p>
+      </section>
+
+      <!-- Todo view -->
+      <section id="appView" class="hidden">
+        <form id="addForm" class="add-form">
+          <input
+            type="text"
+            id="newTitle"
+            placeholder="Add a task and press Enter"
+            maxlength="200"
+            required
+          />
+          <button type="submit">Add</button>
+        </form>
+
+        <ul id="todoList" class="todo-list" aria-live="polite"></ul>
+
+        <p id="emptyMsg" class="muted hidden" role="status">No tasks yet. Add one above.</p>
+        <p id="appMsg" class="msg" role="alert" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

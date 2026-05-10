@@ -1,0 +1,40 @@
+name: Apply Supabase migrations
+
+# Auto-applies any new migration files in todo-app/supabase/migrations/
+# whenever they're pushed to the main branch.
+#
+# Required GitHub Actions secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_ACCESS_TOKEN  Personal access token (account → Access tokens)
+#   SUPABASE_PROJECT_ID    The project ref, e.g. abcd1234efgh
+#   SUPABASE_DB_PASSWORD   The database password you set when creating the project
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "todo-app/supabase/migrations/**"
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: todo-app
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link to project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+        env:
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+
+      - name: Push migrations
+        run: supabase db push

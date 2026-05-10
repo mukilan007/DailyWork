@@ -1,0 +1,2 @@
+-- Moved. The schema now lives in `supabase/migrations/` and is applied by
+-- `npm run db:push` (see README). You can safely delete this file.
