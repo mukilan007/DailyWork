@@ -29,7 +29,8 @@ begin
     ('workouts'),
     ('workout_exercises'),
     ('period_logs'),
-    ('glucose_readings')
+    ('glucose_readings'),
+    ('todos')
   ) as expected(t)
   where not exists (
     select 1 from pg_tables

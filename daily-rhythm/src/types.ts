@@ -3,14 +3,19 @@
 export type Profile = {
   user_id: string;
   display_name: string | null;
+  /** How many months of time-series data to keep (1..24). Null = default 24. */
+  retention_months: number | null;
   updated_at: string;
 };
+
+export type ActivityCategory = "health" | "fitness" | "mind" | "work" | "self_care";
 
 export type Activity = {
   id: string;
   user_id: string;
   name: string;
   icon: string | null;
+  category: ActivityCategory | null;
   frequency: "daily" | "weekly" | "custom";
   created_at: string;
 };
@@ -61,6 +66,49 @@ export type GlucoseReading = {
   user_id: string;
   measured_at: string; // ISO datetime
   value_mg_dl: number;
-  meal_context: "fasting" | "before_meal" | "after_meal" | "bedtime" | "random" | null;
+  meal_context:
+    | "fasting"
+    | "before_breakfast"
+    | "after_breakfast"
+    | "before_lunch"
+    | "after_lunch"
+    | "before_dinner"
+    | "after_dinner"
+    | "bedtime"
+    // Legacy generic values, kept for older readings.
+    | "before_meal"
+    | "after_meal"
+    | "random"
+    | null;
+  meal_description: string | null;
+  notes: string | null;
+};
+
+export type TodoPriority = "low" | "medium" | "high";
+
+export type Todo = {
+  id: string;
+  user_id: string;
+  title: string;
+  is_done: boolean;
+  created_at: string;
+  description: string | null;
+  /** ISO datetime when the ticket is due, or null for no deadline. */
+  due_at: string | null;
+  priority: TodoPriority;
+  /** Optional effort estimate in minutes (1..1440). */
+  estimated_min: number | null;
+};
+
+export type IntegrationProvider = "hevy" | "google_fit" | "fitbit" | "apple_health";
+export type IntegrationStatus = "connected" | "pending" | "disconnected";
+
+export type UserIntegration = {
+  user_id: string;
+  provider: IntegrationProvider;
+  status: IntegrationStatus;
+  connected_at: string;
+  last_sync_at: string | null;
+  credentials: Record<string, unknown>;
   notes: string | null;
 };

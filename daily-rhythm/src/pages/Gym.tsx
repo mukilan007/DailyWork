@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Plus, Trash2, Dumbbell, Star } from "lucide-react";
+import { Plus, Trash2, Dumbbell, Star, Clock, Flame } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -7,10 +7,17 @@ import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
 import { Textarea } from "@/components/ui/Textarea";
 import { Dialog } from "@/components/ui/Dialog";
+import { Badge } from "@/components/ui/Badge";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { ExportButton } from "@/components/ui/ExportButton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { SkeletonList } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
 import type { Workout, WorkoutExercise } from "@/types";
 import { formatDate, formatTime } from "@/lib/dates";
+import { exportReport } from "@/lib/export";
+import { cn } from "@/lib/utils";
 
 const WORKOUT_TYPES = ["strength", "cardio", "yoga", "hiit", "mobility", "sports", "other"] as const;
 
@@ -144,15 +151,91 @@ export function GymPage() {
 
   return (
     <div className="space-y-6">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Gym Workout</h1>
-          <p className="text-muted-foreground">Log your training sessions and exercises.</p>
-        </div>
-        <Button onClick={() => setAddOpen(true)} disabled={loading}>
-          <Plus className="h-4 w-4" /> Add Workout
-        </Button>
-      </header>
+      <PageHeader
+        title="Gym Workout"
+        icon={<Dumbbell className="h-5 w-5" />}
+        description="Log your training sessions and exercises."
+        actions={
+          <div className="flex items-center gap-2">
+            <ExportButton
+              disabled={loading || workouts.length === 0}
+              onExport={(format) => {
+                if (format === "csv") {
+                  // One row per exercise, with workout columns repeated, so the
+                  // CSV is usable in a spreadsheet without nesting.
+                  const rows = workouts.flatMap((w) => {
+                    const exes = exercisesByWorkout[w.id] ?? [];
+                    if (exes.length === 0) {
+                      return [{
+                        performed_at: w.performed_at,
+                        workout: w.name,
+                        type: w.workout_type,
+                        duration_min: w.duration_min,
+                        calories: w.calories,
+                        rating: w.rating,
+                        exercise: "",
+                        sets: "",
+                        reps: "",
+                        weight: "",
+                        notes: w.notes,
+                      }];
+                    }
+                    return exes.map((e) => ({
+                      performed_at: w.performed_at,
+                      workout: w.name,
+                      type: w.workout_type,
+                      duration_min: w.duration_min,
+                      calories: w.calories,
+                      rating: w.rating,
+                      exercise: e.name,
+                      sets: e.sets,
+                      reps: e.reps,
+                      weight: e.weight,
+                      notes: w.notes,
+                    }));
+                  });
+                  exportReport({
+                    name: "workouts",
+                    format,
+                    rows,
+                    columns: [
+                      "performed_at", "workout", "type", "duration_min",
+                      "calories", "rating", "exercise", "sets", "reps",
+                      "weight", "notes",
+                    ],
+                  });
+                } else {
+                  exportReport({
+                    name: "workouts",
+                    format,
+                    rows: workouts.map((w) => ({
+                      id: w.id,
+                      name: w.name,
+                      workout_type: w.workout_type,
+                      performed_at: w.performed_at,
+                      duration_min: w.duration_min,
+                      calories: w.calories,
+                      rating: w.rating,
+                      notes: w.notes,
+                      exercises: (exercisesByWorkout[w.id] ?? []).map((e) => ({
+                        name: e.name,
+                        sets: e.sets,
+                        reps: e.reps,
+                        weight: e.weight,
+                        position: e.position,
+                      })),
+                    })),
+                    meta: { source: "gym" },
+                  });
+                }
+              }}
+            />
+            <Button onClick={() => setAddOpen(true)} disabled={loading}>
+              <Plus className="h-4 w-4" /> Add Workout
+            </Button>
+          </div>
+        }
+      />
 
       {error && (
         <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
@@ -160,27 +243,35 @@ export function GymPage() {
         </div>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Hevy integration</CardTitle>
+      <Card className="border-dashed bg-muted/30">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Dumbbell className="h-4 w-4 text-primary" /> Hevy integration
+          </CardTitle>
           <CardDescription>Sync workouts from your Hevy account.</CardDescription>
         </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Connect Hevy in <a href="/settings/integrations" className="text-primary hover:underline">Settings → Integrations</a> to auto-import sessions.
-          </p>
+        <CardContent className="text-sm text-muted-foreground">
+          Connect Hevy in{" "}
+          <a href="/settings/integrations" className="text-primary hover:underline font-medium">
+            Settings → Integrations
+          </a>{" "}
+          to auto-import sessions.
         </CardContent>
       </Card>
 
       {loading ? (
-        <p className="text-muted-foreground">Loading…</p>
+        <SkeletonList rows={3} />
       ) : workouts.length === 0 ? (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground">
-            <Dumbbell className="h-10 w-10 mx-auto mb-3 opacity-50" />
-            No workouts yet. Click <strong>Add Workout</strong> to log your first session.
-          </CardContent>
-        </Card>
+        <EmptyState
+          icon={<Dumbbell className="h-7 w-7" />}
+          title="No workouts yet"
+          description="Log your first training session — track exercises, sets, reps, weight, and how it felt."
+          action={
+            <Button onClick={() => setAddOpen(true)}>
+              <Plus className="h-4 w-4" /> Add your first workout
+            </Button>
+          }
+        />
       ) : (
         <div className="grid gap-3">
           {workouts.map((w) => {
@@ -189,20 +280,36 @@ export function GymPage() {
               <Card key={w.id}>
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <h3 className="font-medium truncate">{w.name}</h3>
-                      <p className="text-xs text-muted-foreground capitalize">
-                        {w.workout_type} · {formatDate(w.performed_at)} · {formatTime(w.performed_at)}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-medium truncate">{w.name}</h3>
+                        <Badge variant="secondary" className="capitalize">{w.workout_type}</Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {formatDate(w.performed_at)} · {formatTime(w.performed_at)}
                       </p>
-                      <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-muted-foreground">
-                        {w.duration_min != null && <span>{w.duration_min} min</span>}
-                        {w.calories != null && <span>{w.calories} kcal</span>}
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-xs">
+                        {w.duration_min != null && (
+                          <span className="inline-flex items-center gap-1 text-muted-foreground">
+                            <Clock className="h-3.5 w-3.5" />
+                            <span className="tabular-nums">{w.duration_min}</span> min
+                          </span>
+                        )}
+                        {w.calories != null && (
+                          <span className="inline-flex items-center gap-1 text-muted-foreground">
+                            <Flame className="h-3.5 w-3.5" />
+                            <span className="tabular-nums">{w.calories}</span> kcal
+                          </span>
+                        )}
                         {w.rating != null && (
-                          <span className="flex items-center gap-0.5">
+                          <span className="flex items-center gap-0.5" aria-label={`${w.rating} out of 5`}>
                             {Array.from({ length: 5 }).map((_, i) => (
                               <Star
                                 key={i}
-                                className={`h-3 w-3 ${i < (w.rating ?? 0) ? "fill-yellow-500 text-yellow-500" : "text-muted-foreground/40"}`}
+                                className={cn(
+                                  "h-3.5 w-3.5",
+                                  i < (w.rating ?? 0) ? "fill-yellow-500 text-yellow-500" : "text-muted-foreground/30"
+                                )}
                               />
                             ))}
                           </span>
@@ -213,6 +320,7 @@ export function GymPage() {
                       type="button"
                       variant="ghost"
                       size="icon"
+                      className="h-8 w-8 opacity-60 hover:opacity-100"
                       aria-label={`Delete ${w.name}`}
                       onClick={() => deleteWorkout(w)}
                     >
@@ -221,21 +329,31 @@ export function GymPage() {
                   </div>
 
                   {exes.length > 0 && (
-                    <ul className="mt-3 space-y-1.5 border-t pt-3">
-                      {exes.map((e) => (
-                        <li key={e.id} className="text-sm flex items-center justify-between gap-2">
-                          <span className="font-medium">{e.name}</span>
-                          <span className="text-muted-foreground text-xs">
-                            {[e.sets && `${e.sets} sets`, e.reps && `${e.reps} reps`, e.weight && `${e.weight} kg`]
+                    <ul className="mt-4 space-y-1 border-t pt-3">
+                      {exes.map((e, idx) => (
+                        <li
+                          key={e.id}
+                          className="text-sm flex items-center gap-3 py-1 hover:bg-accent/30 rounded -mx-2 px-2 transition-colors"
+                        >
+                          <span className="text-[10px] font-semibold text-muted-foreground w-5 tabular-nums">
+                            {idx + 1}.
+                          </span>
+                          <span className="font-medium flex-1 truncate">{e.name}</span>
+                          <span className="text-muted-foreground text-xs tabular-nums">
+                            {[e.sets && `${e.sets} × `, e.reps && `${e.reps}`, e.weight && ` @ ${e.weight} kg`]
                               .filter(Boolean)
-                              .join(" · ")}
+                              .join("")}
                           </span>
                         </li>
                       ))}
                     </ul>
                   )}
 
-                  {w.notes && <p className="mt-3 text-sm text-muted-foreground italic">{w.notes}</p>}
+                  {w.notes && (
+                    <p className="mt-3 text-sm text-muted-foreground italic border-l-2 border-primary/30 pl-3">
+                      {w.notes}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             );

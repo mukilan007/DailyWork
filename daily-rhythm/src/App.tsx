@@ -5,6 +5,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { AuthPage } from "@/pages/Auth";
 import { HomePage } from "@/pages/Home";
 import { DailyRoutinePage } from "@/pages/DailyRoutine";
+import { TodosPage } from "@/pages/Todos";
 import { GymPage } from "@/pages/Gym";
 import { HealthPeriodPage } from "@/pages/HealthPeriod";
 import { HealthDiabetesPage } from "@/pages/HealthDiabetes";
@@ -42,6 +43,7 @@ export default function App() {
             <Route element={<ProtectedRoutes />}>
               <Route path="/" element={<HomePage />} />
               <Route path="/daily-routine" element={<DailyRoutinePage />} />
+              <Route path="/todos" element={<TodosPage />} />
               <Route path="/gym" element={<GymPage />} />
               <Route path="/health/period" element={<HealthPeriodPage />} />
               <Route path="/health/diabetes" element={<HealthDiabetesPage />} />

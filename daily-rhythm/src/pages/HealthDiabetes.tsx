@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Droplet } from "lucide-react";
+import { Plus, Trash2, Droplet, TrendingUp, Activity, Target, AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -7,12 +7,43 @@ import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
 import { Textarea } from "@/components/ui/Textarea";
 import { Dialog } from "@/components/ui/Dialog";
+import { Badge } from "@/components/ui/Badge";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { ExportButton } from "@/components/ui/ExportButton";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { SkeletonStatGrid, SkeletonCard } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
 import type { GlucoseReading } from "@/types";
 import { formatDate, formatTime } from "@/lib/dates";
+import { exportReport } from "@/lib/export";
+import { cn } from "@/lib/utils";
 
-const MEAL_CONTEXTS = ["fasting", "before_meal", "after_meal", "bedtime", "random"] as const;
+/** Ordered list of meal-context values shown in the picker, with display labels.
+ * The legacy generic values ("before_meal", "after_meal", "random") are still
+ * accepted by the database but are no longer offered in the dropdown — old
+ * readings continue to display correctly via {@link mealContextLabel}. */
+const MEAL_CONTEXTS: { value: NonNullable<GlucoseReading["meal_context"]>; label: string }[] = [
+  { value: "fasting", label: "Fasting" },
+  { value: "before_breakfast", label: "Before Breakfast" },
+  { value: "after_breakfast", label: "After Breakfast" },
+  { value: "before_lunch", label: "Before Lunch" },
+  { value: "after_lunch", label: "After Lunch" },
+  { value: "before_dinner", label: "Before Dinner" },
+  { value: "after_dinner", label: "After Dinner" },
+  { value: "bedtime", label: "Bedtime" },
+];
+
+function mealContextLabel(ctx: GlucoseReading["meal_context"]): string {
+  if (!ctx) return "";
+  const known = MEAL_CONTEXTS.find((m) => m.value === ctx);
+  if (known) return known.label;
+  // Legacy values: humanize underscores and title-case.
+  return ctx
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
 
 // Standard target range for adults with diabetes (mg/dL).
 const RANGE_LOW = 70;
@@ -94,15 +125,47 @@ export function HealthDiabetesPage() {
 
   return (
     <div className="space-y-6">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Diabetes</h1>
-          <p className="text-muted-foreground">Monitor your glucose readings and trends.</p>
-        </div>
-        <Button onClick={() => setAddOpen(true)} disabled={loading}>
-          <Plus className="h-4 w-4" /> Add Reading
-        </Button>
-      </header>
+      <PageHeader
+        title="Diabetes"
+        icon={<Droplet className="h-5 w-5" />}
+        description="Monitor your glucose readings and trends."
+        actions={
+          <div className="flex items-center gap-2">
+            <ExportButton
+              disabled={loading || readings.length === 0}
+              onExport={(format) =>
+                exportReport({
+                  name: "glucose-readings",
+                  format,
+                  rows: readings.map((r) => ({
+                    measured_at: r.measured_at,
+                    value_mg_dl: r.value_mg_dl,
+                    meal_context: r.meal_context ?? "",
+                    meal_context_label: mealContextLabel(r.meal_context),
+                    meal_description: r.meal_description ?? "",
+                    notes: r.notes ?? "",
+                    id: r.id,
+                  })),
+                  columns: [
+                    "measured_at", "value_mg_dl", "meal_context",
+                    "meal_context_label", "meal_description", "notes", "id",
+                  ],
+                  meta: stats
+                    ? {
+                        source: "diabetes",
+                        target_range: { low: RANGE_LOW, high: RANGE_HIGH },
+                        summary: stats,
+                      }
+                    : { source: "diabetes" },
+                })
+              }
+            />
+            <Button onClick={() => setAddOpen(true)} disabled={loading}>
+              <Plus className="h-4 w-4" /> Add Reading
+            </Button>
+          </div>
+        }
+      />
 
       {error && (
         <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
@@ -110,18 +173,48 @@ export function HealthDiabetesPage() {
         </div>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Average" value={stats ? `${stats.avg}` : "—"} hint="mg/dL" />
-        <StatCard label="Estimated A1C" value={stats ? `${stats.eA1c}%` : "—"} hint="From avg" />
-        <StatCard label="In range" value={stats ? `${stats.inRangePct}%` : "—"} hint={`${RANGE_LOW}–${RANGE_HIGH} mg/dL`} />
-        <StatCard label="Out of range" value={stats ? `${stats.lowPct + stats.highPct}%` : "—"} hint={stats ? `${stats.lowPct}% low · ${stats.highPct}% high` : ""} />
-      </div>
+      {loading ? (
+        <SkeletonStatGrid />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            accent="primary"
+            icon={<Activity className="h-4 w-4" />}
+            label="Average"
+            value={stats ? `${stats.avg}` : "—"}
+            hint="mg/dL"
+          />
+          <StatCard
+            accent="indigo"
+            icon={<TrendingUp className="h-4 w-4" />}
+            label="Est. A1C"
+            value={stats ? `${stats.eA1c}%` : "—"}
+            hint="From rolling avg"
+          />
+          <StatCard
+            accent="emerald"
+            icon={<Target className="h-4 w-4" />}
+            label="In range"
+            value={stats ? `${stats.inRangePct}%` : "—"}
+            hint={`${RANGE_LOW}–${RANGE_HIGH} mg/dL`}
+          />
+          <StatCard
+            accent="rose"
+            icon={<AlertTriangle className="h-4 w-4" />}
+            label="Out of range"
+            value={stats ? `${stats.lowPct + stats.highPct}%` : "—"}
+            hint={stats ? `${stats.lowPct}% low · ${stats.highPct}% high` : ""}
+          />
+        </div>
+      )}
 
       {trend.length >= 2 && (
         <Card>
           <CardHeader>
-            <CardTitle>Trend</CardTitle>
-            <CardDescription>Last {trend.length} readings, oldest → newest. Bands at {RANGE_LOW} / {RANGE_HIGH} mg/dL.</CardDescription>
+            <CardTitle className="text-base">Trend</CardTitle>
+            <CardDescription>
+              Last {trend.length} readings, oldest → newest. Green band marks {RANGE_LOW}–{RANGE_HIGH} mg/dL.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <TrendChart readings={trend} />
@@ -130,43 +223,82 @@ export function HealthDiabetesPage() {
       )}
 
       {loading ? (
-        <p className="text-muted-foreground">Loading…</p>
+        <SkeletonCard rows={4} />
       ) : readings.length === 0 ? (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground">
-            <Droplet className="h-10 w-10 mx-auto mb-3 opacity-50" />
-            No readings yet. Click <strong>Add Reading</strong> to log your first measurement.
-          </CardContent>
-        </Card>
+        <EmptyState
+          icon={<Droplet className="h-7 w-7" />}
+          title="No readings yet"
+          description="Log glucose readings throughout the day. Trends, in-range %, and estimated A1C will appear automatically."
+          action={
+            <Button onClick={() => setAddOpen(true)}>
+              <Plus className="h-4 w-4" /> Add your first reading
+            </Button>
+          }
+        />
       ) : (
         <Card>
           <CardHeader>
-            <CardTitle>Recent readings</CardTitle>
+            <CardTitle className="text-base">Recent readings</CardTitle>
           </CardHeader>
           <CardContent>
-            <ul className="divide-y">
+            <ul className="divide-y divide-border -mt-2">
               {readings.slice(0, 30).map((r) => {
                 const status =
                   r.value_mg_dl < RANGE_LOW ? "low" : r.value_mg_dl > RANGE_HIGH ? "high" : "in";
-                const statusClass =
+                const barClass =
+                  status === "low"
+                    ? "bg-amber-500"
+                    : status === "high"
+                    ? "bg-rose-500"
+                    : "bg-emerald-500";
+                const valueClass =
                   status === "low"
                     ? "text-amber-600 dark:text-amber-400"
                     : status === "high"
                     ? "text-rose-600 dark:text-rose-400"
                     : "text-emerald-600 dark:text-emerald-400";
                 return (
-                  <li key={r.id} className="py-3 flex items-center justify-between gap-3">
-                    <div>
-                      <p className={`font-semibold ${statusClass}`}>
-                        {r.value_mg_dl} <span className="font-normal text-xs text-muted-foreground">mg/dL</span>
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatDate(r.measured_at)} · {formatTime(r.measured_at)}
-                        {r.meal_context ? ` · ${r.meal_context.replace("_", " ")}` : ""}
-                      </p>
-                      {r.notes && <p className="text-xs text-muted-foreground italic">{r.notes}</p>}
+                  <li
+                    key={r.id}
+                    className="py-3 flex items-center justify-between gap-3 hover:bg-accent/30 -mx-3 px-3 rounded transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <span
+                        aria-hidden
+                        className={cn("h-10 w-1 rounded-full shrink-0", barClass)}
+                      />
+                      <div className="min-w-0">
+                        <p className="font-semibold text-base">
+                          <span className={valueClass}>{r.value_mg_dl}</span>{" "}
+                          <span className="font-normal text-xs text-muted-foreground">mg/dL</span>
+                          {r.meal_context && (
+                            <Badge variant="secondary" className="ml-2">
+                              {mealContextLabel(r.meal_context)}
+                            </Badge>
+                          )}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatDate(r.measured_at)} · {formatTime(r.measured_at)}
+                        </p>
+                        {r.meal_description && (
+                          <p className="text-xs text-foreground/80 mt-1">
+                            🍽 {r.meal_description}
+                          </p>
+                        )}
+                        {r.notes && (
+                          <p className="text-xs text-muted-foreground italic mt-1 border-l-2 border-primary/30 pl-2">
+                            {r.notes}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                    <Button variant="ghost" size="icon" aria-label="Delete reading" onClick={() => deleteReading(r)}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 opacity-60 hover:opacity-100"
+                      aria-label="Delete reading"
+                      onClick={() => deleteReading(r)}
+                    >
                       <Trash2 className="h-4 w-4 text-muted-foreground" />
                     </Button>
                   </li>
@@ -182,13 +314,55 @@ export function HealthDiabetesPage() {
   );
 }
 
-function StatCard({ label, value, hint }: { label: string; value: string; hint: string }) {
+const STAT_ACCENTS = {
+  primary: { tile: "bg-primary/10 text-primary ring-primary/20", bar: "from-primary/40 via-primary/0" },
+  emerald: {
+    tile: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 ring-emerald-500/20",
+    bar: "from-emerald-500/40 via-emerald-500/0",
+  },
+  indigo: {
+    tile: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 ring-indigo-500/20",
+    bar: "from-indigo-500/40 via-indigo-500/0",
+  },
+  rose: {
+    tile: "bg-rose-500/10 text-rose-600 dark:text-rose-400 ring-rose-500/20",
+    bar: "from-rose-500/40 via-rose-500/0",
+  },
+} as const;
+
+function StatCard({
+  accent,
+  icon,
+  label,
+  value,
+  hint,
+}: {
+  accent: keyof typeof STAT_ACCENTS;
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  const a = STAT_ACCENTS[accent];
   return (
-    <Card>
-      <CardContent className="p-5 space-y-1">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
-        <p className="text-2xl font-semibold">{value}</p>
-        <p className="text-xs text-muted-foreground">{hint}</p>
+    <Card className="relative overflow-hidden">
+      <div className={cn("pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b to-transparent", a.bar)} />
+      <CardContent className="p-5 relative">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {label}
+          </span>
+          <div
+            className={cn(
+              "flex h-8 w-8 items-center justify-center rounded-lg ring-1 ring-inset",
+              a.tile
+            )}
+          >
+            {icon}
+          </div>
+        </div>
+        <p className="mt-3 text-2xl font-semibold tracking-tight tabular-nums">{value}</p>
+        <p className="mt-1 text-xs text-muted-foreground truncate">{hint}</p>
       </CardContent>
     </Card>
   );
@@ -231,6 +405,7 @@ function AddReadingDialog({
   const [value, setValue] = useState("");
   const [measuredAt, setMeasuredAt] = useState(localDateTimeNow());
   const [context, setContext] = useState<GlucoseReading["meal_context"]>(null);
+  const [mealDescription, setMealDescription] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -239,6 +414,7 @@ function AddReadingDialog({
       setValue("");
       setMeasuredAt(localDateTimeNow());
       setContext(null);
+      setMealDescription("");
       setNotes("");
       setSaving(false);
     }
@@ -253,6 +429,7 @@ function AddReadingDialog({
       measured_at: new Date(measuredAt).toISOString(),
       value_mg_dl: v,
       meal_context: context,
+      meal_description: mealDescription.trim() || null,
       notes: notes.trim() || null,
     });
     setSaving(false);
@@ -272,13 +449,24 @@ function AddReadingDialog({
           </div>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="g-ctx">Context</Label>
+          <Label htmlFor="g-ctx">Time</Label>
           <Select id="g-ctx" value={context ?? ""} onChange={(e) => setContext((e.target.value || null) as GlucoseReading["meal_context"])}>
             <option value="">None</option>
             {MEAL_CONTEXTS.map((c) => (
-              <option key={c} value={c}>{c.replace("_", " ")}</option>
+              <option key={c.value} value={c.value}>{c.label}</option>
             ))}
           </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="g-meal">Meal description</Label>
+          <Textarea
+            id="g-meal"
+            value={mealDescription}
+            onChange={(e) => setMealDescription(e.target.value)}
+            placeholder="What did you eat? e.g. 2 idli + sambar, or skipped breakfast"
+            maxLength={500}
+            rows={2}
+          />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="g-notes">Notes</Label>
