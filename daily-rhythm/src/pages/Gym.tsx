@@ -174,9 +174,9 @@ export function GymPage() {
                         calories: w.calories,
                         rating: w.rating,
                         exercise: "",
-                        sets: "",
-                        reps: "",
-                        weight: "",
+                        sets: null,
+                        reps: null,
+                        weight: null,
                         notes: w.notes,
                       }];
                     }
