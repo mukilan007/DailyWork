@@ -402,8 +402,12 @@ function AddReadingDialog({
   onClose: () => void;
   onSave: (input: Omit<GlucoseReading, "id" | "user_id">) => Promise<void>;
 }) {
+  const initial = useMemo(() => splitNow(), []);
   const [value, setValue] = useState("");
-  const [measuredAt, setMeasuredAt] = useState(localDateTimeNow());
+  const [date, setDate] = useState(initial.date);
+  const [hour12, setHour12] = useState(initial.hour12);
+  const [minute, setMinute] = useState(initial.minute);
+  const [period, setPeriod] = useState<TimePeriod>(initial.period);
   const [context, setContext] = useState<GlucoseReading["meal_context"]>(null);
   const [mealDescription, setMealDescription] = useState("");
   const [notes, setNotes] = useState("");
@@ -411,8 +415,12 @@ function AddReadingDialog({
 
   useEffect(() => {
     if (!open) {
+      const now = splitNow();
       setValue("");
-      setMeasuredAt(localDateTimeNow());
+      setDate(now.date);
+      setHour12(now.hour12);
+      setMinute(now.minute);
+      setPeriod(now.period);
       setContext(null);
       setMealDescription("");
       setNotes("");
@@ -426,7 +434,7 @@ function AddReadingDialog({
     if (!Number.isFinite(v) || v < 20 || v > 700) return;
     setSaving(true);
     await onSave({
-      measured_at: new Date(measuredAt).toISOString(),
+      measured_at: combine12h(date, hour12, minute, period).toISOString(),
       value_mg_dl: v,
       meal_context: context,
       meal_description: mealDescription.trim() || null,
@@ -444,12 +452,48 @@ function AddReadingDialog({
             <Input id="g-val" type="number" min={20} max={700} value={value} onChange={(e) => setValue(e.target.value)} required autoFocus />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="g-when">When</Label>
-            <Input id="g-when" type="datetime-local" value={measuredAt} onChange={(e) => setMeasuredAt(e.target.value)} required />
+            <Label htmlFor="g-date">Date</Label>
+            <Input id="g-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
           </div>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="g-ctx">Time</Label>
+          <Label htmlFor="g-hour">Time</Label>
+          <div className="flex items-center gap-2">
+            <Select
+              id="g-hour"
+              aria-label="Hour"
+              value={hour12}
+              onChange={(e) => setHour12(Number(e.target.value))}
+              className="w-20"
+            >
+              {HOURS_12.map((h) => (
+                <option key={h} value={h}>{String(h).padStart(2, "0")}</option>
+              ))}
+            </Select>
+            <span className="text-muted-foreground select-none" aria-hidden>:</span>
+            <Select
+              aria-label="Minute"
+              value={minute}
+              onChange={(e) => setMinute(Number(e.target.value))}
+              className="w-20"
+            >
+              {MINUTES_60.map((m) => (
+                <option key={m} value={m}>{String(m).padStart(2, "0")}</option>
+              ))}
+            </Select>
+            <Select
+              aria-label="AM or PM"
+              value={period}
+              onChange={(e) => setPeriod(e.target.value as TimePeriod)}
+              className="w-20"
+            >
+              <option value="AM">AM</option>
+              <option value="PM">PM</option>
+            </Select>
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="g-ctx">Meal context</Label>
           <Select id="g-ctx" value={context ?? ""} onChange={(e) => setContext((e.target.value || null) as GlucoseReading["meal_context"])}>
             <option value="">None</option>
             {MEAL_CONTEXTS.map((c) => (
@@ -481,8 +525,29 @@ function AddReadingDialog({
   );
 }
 
-function localDateTimeNow(): string {
+type TimePeriod = "AM" | "PM";
+
+/** Pre-built option arrays so the Select dropdowns don't re-allocate on every render. */
+const HOURS_12 = Array.from({ length: 12 }, (_, i) => i + 1);
+const MINUTES_60 = Array.from({ length: 60 }, (_, i) => i);
+
+/** Split `new Date()` into the four pieces the 12-hour time picker needs:
+ *  a `YYYY-MM-DD` date string, a 1–12 hour, a 0–59 minute, and AM/PM. */
+function splitNow(): { date: string; hour12: number; minute: number; period: TimePeriod } {
   const d = new Date();
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  return d.toISOString().slice(0, 16);
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const h = d.getHours();
+  return {
+    date,
+    hour12: ((h + 11) % 12) + 1,
+    minute: d.getMinutes(),
+    period: h >= 12 ? "PM" : "AM",
+  };
+}
+
+/** Recombine the picker's four pieces into a single local-time Date. */
+function combine12h(date: string, hour12: number, minute: number, period: TimePeriod): Date {
+  const [y, m, d] = date.split("-").map(Number);
+  const h24 = (hour12 % 12) + (period === "PM" ? 12 : 0);
+  return new Date(y, m - 1, d, h24, minute, 0, 0);
 }

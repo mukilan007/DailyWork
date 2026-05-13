@@ -1,21 +1,32 @@
 import { createContext, ReactNode, useContext, useEffect, useState } from "react";
 
-export type Theme = "light" | "dark" | "system";
+export type Theme = "light" | "dark" | "system" | "panda";
 
 interface ThemeContextValue {
   theme: Theme;
-  resolved: "light" | "dark";
+  /** The visual mode actually applied. "panda" is a third mode in addition
+   *  to light/dark — it has its own colour tokens and decorative background. */
+  resolved: "light" | "dark" | "panda";
   setTheme: (t: Theme) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 const STORAGE_KEY = "daily-rhythm-theme";
 
-function resolve(theme: Theme): "light" | "dark" {
+function resolve(theme: Theme): "light" | "dark" | "panda" {
+  if (theme === "panda") return "panda";
   if (theme === "system") {
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
   return theme;
+}
+
+/** Sync the html root's theme classes. The two classes are mutually
+ *  exclusive — only one of `dark` / `panda` is ever applied. */
+function applyRootClasses(mode: "light" | "dark" | "panda") {
+  const root = document.documentElement;
+  root.classList.toggle("dark", mode === "dark");
+  root.classList.toggle("panda", mode === "panda");
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -23,23 +34,24 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem(STORAGE_KEY) as Theme | null;
     return saved ?? "system";
   });
-  const [resolved, setResolved] = useState<"light" | "dark">(() => resolve(theme));
+  const [resolved, setResolved] = useState<"light" | "dark" | "panda">(() => resolve(theme));
 
   useEffect(() => {
     const r = resolve(theme);
     setResolved(r);
-    document.documentElement.classList.toggle("dark", r === "dark");
+    applyRootClasses(r);
     localStorage.setItem(STORAGE_KEY, theme);
   }, [theme]);
 
-  // React to OS-level changes when set to "system".
+  // React to OS-level changes when set to "system". Panda mode ignores OS
+  // preference because the user has explicitly opted into it.
   useEffect(() => {
     if (theme !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = () => {
       const r = mq.matches ? "dark" : "light";
       setResolved(r);
-      document.documentElement.classList.toggle("dark", r === "dark");
+      applyRootClasses(r);
     };
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);

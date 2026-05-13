@@ -39,6 +39,18 @@ export function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
+/** Long-form date label like "Tuesday, May 14". */
+export function formatLongDate(d: Date = new Date()): string {
+  return d.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+}
+
+/** 1-based day-of-year for a local date. Good enough for stable daily picks. */
+export function dayOfYear(d: Date = new Date()): number {
+  const start = new Date(d.getFullYear(), 0, 0);
+  const diff = d.getTime() - start.getTime();
+  return Math.floor(diff / 86_400_000);
+}
+
 /** Short relative time: "just now", "5m ago", "2h ago", "3d ago", or a date for older. */
 export function formatRelative(iso: string): string {
   const then = new Date(iso).getTime();
