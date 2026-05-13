@@ -11,7 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { SkeletonStatGrid, SkeletonCard } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/lib/supabase";
+import { supabase, isMissingColumnError } from "@/lib/supabase";
 import type { Activity, ActivityCompletion, Workout, GlucoseReading } from "@/types";
 import { ymd, weekDates, DAY_LABELS, formatDate } from "@/lib/dates";
 import { cn } from "@/lib/utils";
@@ -34,8 +34,11 @@ export function HomePage() {
     let cancelled = false;
     (async () => {
       const sevenDaysAgo = ymdDaysAgo(7);
+      // Prefer the server-side `is_archived = false` filter so Postgres can
+      // use the partial index; fall back to an unfiltered query if the
+      // user's DB doesn't have the column yet.
       const [activitiesRes, completionsRes, workoutsRes, glucoseRes, profileRes] = await Promise.all([
-        supabase.from("activities").select("*"),
+        supabase.from("activities").select("*").eq("is_archived", false),
         supabase.from("activity_completions").select("*").gte("completed_on", sevenDaysAgo),
         supabase
           .from("workouts")
@@ -50,8 +53,18 @@ export function HomePage() {
         supabase.from("profiles").select("display_name").eq("user_id", user.id).maybeSingle(),
       ]);
       if (cancelled) return;
+
+      let activitiesData = activitiesRes.data ?? [];
+      let activitiesError = activitiesRes.error;
+      if (isMissingColumnError(activitiesError, "is_archived")) {
+        const retry = await supabase.from("activities").select("*");
+        if (cancelled) return;
+        activitiesData = (retry.data ?? []).filter((a) => !a.is_archived);
+        activitiesError = retry.error;
+      }
+
       const firstError =
-        activitiesRes.error ??
+        activitiesError ??
         completionsRes.error ??
         workoutsRes.error ??
         glucoseRes.error ??
@@ -60,9 +73,18 @@ export function HomePage() {
         setError(firstError.message);
         return;
       }
+
+      // Drop completions that belong to archived (or otherwise-missing)
+      // activities so today's count and the weekly chart don't keep
+      // crediting hidden habits.
+      const activeIds = new Set(activitiesData.map((a) => a.id));
+      const visibleCompletions = (completionsRes.data ?? []).filter((c) =>
+        activeIds.has(c.activity_id)
+      );
+
       setData({
-        activities: activitiesRes.data ?? [],
-        completions: completionsRes.data ?? [],
+        activities: activitiesData,
+        completions: visibleCompletions,
         workouts: workoutsRes.data ?? [],
         glucose: glucoseRes.data ?? [],
         displayName: profileRes.data?.display_name ?? null,

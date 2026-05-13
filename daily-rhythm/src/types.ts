@@ -8,7 +8,13 @@ export type Profile = {
   updated_at: string;
 };
 
-export type ActivityCategory = "health" | "fitness" | "mind" | "work" | "self_care";
+export type ActivityCategory =
+  | "health"
+  | "fitness"
+  | "mind"
+  | "work"
+  | "self_care"
+  | "other";
 
 export type Activity = {
   id: string;
@@ -17,6 +23,10 @@ export type Activity = {
   icon: string | null;
   category: ActivityCategory | null;
   frequency: "daily" | "weekly" | "custom";
+  /** Soft-delete flag. Archived activities keep their completion history
+   *  but are hidden from the active list. May be undefined on databases
+   *  where the migration hasn't been applied yet. */
+  is_archived?: boolean;
   created_at: string;
 };
 

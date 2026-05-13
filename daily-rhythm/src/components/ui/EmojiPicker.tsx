@@ -216,7 +216,7 @@ export function EmojiPicker({ value, onChange, id, placeholder = "Pick", classNa
           role="dialog"
           aria-label="Emoji picker"
           className={cn(
-            "absolute z-50 mt-1 w-[20rem] max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-popover text-popover-foreground shadow-lg",
+            "absolute z-50 mt-1 w-[20rem] max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-card text-card-foreground shadow-lg",
             "left-0"
           )}
         >

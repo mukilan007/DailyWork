@@ -782,6 +782,30 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
             type="datetime-local"
             value={dueLocal}
             onChange={(e) => setDueLocal(e.target.value)}
+            // Force-open the native picker on click. By default Chromium
+            // only opens the popup when the user clicks the tiny calendar
+            // indicator at the right edge; clicking the rest of the field
+            // just focuses it for typing. `showPicker()` lets a click
+            // anywhere in the field open the picker — supported in Chrome
+            // 99+, Edge 99+, Firefox 101+, Safari 16+. Guarded with a
+            // typeof check so older browsers still focus + type as before.
+            onClick={(e) => {
+              const el = e.currentTarget as HTMLInputElement & {
+                showPicker?: () => void;
+              };
+              if (typeof el.showPicker === "function") {
+                try {
+                  el.showPicker();
+                } catch {
+                  // showPicker throws outside a user gesture or when the
+                  // input is disabled/readonly — safe to ignore.
+                }
+              }
+            }}
+            // `color-scheme: dark` makes the native datetime-local calendar
+            // icon and popup picker render with dark styling. Without it the
+            // icon is dark-on-dark (invisible) on our dark theme.
+            className="[color-scheme:dark] cursor-pointer [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-80 hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
           />
           {dueLocal && (
             <div className="flex items-center gap-1.5">

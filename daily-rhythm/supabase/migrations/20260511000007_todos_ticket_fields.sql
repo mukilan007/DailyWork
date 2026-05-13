@@ -1,3 +1,4 @@
+-- pragma: allow-set-not-null reason="priority is backfilled to 'medium' before SET NOT NULL (see UPDATE below)"
 -- Promote todos to "tickets" with timing + priority metadata.
 -- Adds:
 --   * description    - optional long-form notes

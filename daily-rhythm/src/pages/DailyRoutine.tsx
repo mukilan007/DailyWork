@@ -1,12 +1,15 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Plus,
+  Pencil,
   Trash2,
   Flame,
   Check,
   Activity as ActivityIcon,
   ChevronLeft,
   ChevronRight,
+  Archive,
+  AlertTriangle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -20,7 +23,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { EmojiPicker } from "@/components/ui/EmojiPicker";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/lib/supabase";
+import { supabase, isMissingColumnError } from "@/lib/supabase";
 import type { Activity, ActivityCategory, ActivityCompletion } from "@/types";
 import { ymd, weekDates, addDays, startOfWeek, DAY_LABELS } from "@/lib/dates";
 import { exportReport } from "@/lib/export";
@@ -59,6 +62,12 @@ const CATEGORIES: CategoryMeta[] = [
     chip: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 ring-emerald-500/20",
     dot: "bg-emerald-500",
   },
+  {
+    value: "other",
+    label: "Other",
+    chip: "bg-slate-500/10 text-slate-600 dark:text-slate-300 ring-slate-500/20",
+    dot: "bg-slate-500",
+  },
 ];
 
 const CATEGORY_BY_VALUE: Record<ActivityCategory, CategoryMeta> = Object.fromEntries(
@@ -89,6 +98,9 @@ export function DailyRoutinePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [editingActivity, setEditingActivity] = useState<Activity | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Activity | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const today = ymd();
   const [weekAnchor, setWeekAnchor] = useState<Date>(() => startOfWeek(new Date()));
@@ -103,8 +115,17 @@ export function DailyRoutinePage() {
     let cancelled = false;
     (async () => {
       setLoading(true);
+      // Prefer a server-side filter so Postgres can use the
+      // `activities_user_active_idx` partial index. Fall back to an
+      // unfiltered query (and a client-side filter below) if the column
+      // doesn't exist yet on the user's DB.
+      const filteredActivities = supabase
+        .from("activities")
+        .select("*")
+        .eq("is_archived", false)
+        .order("created_at", { ascending: true });
       const [activitiesRes, completionsRes] = await Promise.all([
-        supabase.from("activities").select("*").order("created_at", { ascending: true }),
+        filteredActivities,
         // Pull a year of completions so users can review/edit any past week.
         supabase
           .from("activity_completions")
@@ -113,11 +134,31 @@ export function DailyRoutinePage() {
           .order("completed_on", { ascending: false }),
       ]);
       if (cancelled) return;
-      if (activitiesRes.error) setError(activitiesRes.error.message);
+
+      let activitiesData = activitiesRes.data ?? [];
+      let activitiesError = activitiesRes.error;
+      if (isMissingColumnError(activitiesError, "is_archived")) {
+        const retry = await supabase
+          .from("activities")
+          .select("*")
+          .order("created_at", { ascending: true });
+        if (cancelled) return;
+        activitiesData = (retry.data ?? []).filter((a) => !a.is_archived);
+        activitiesError = retry.error;
+      }
+
+      if (activitiesError) setError(activitiesError.message);
       else if (completionsRes.error) setError(completionsRes.error.message);
       else {
-        setActivities(activitiesRes.data ?? []);
-        setCompletions(completionsRes.data ?? []);
+        // Drop completions belonging to archived activities so the weekly
+        // bar chart and any other completions-derived UI doesn't keep
+        // crediting hidden habits on past dates.
+        const activeIds = new Set(activitiesData.map((a) => a.id));
+        const visibleCompletions = (completionsRes.data ?? []).filter((c) =>
+          activeIds.has(c.activity_id)
+        );
+        setActivities(activitiesData);
+        setCompletions(visibleCompletions);
       }
       setLoading(false);
     })();
@@ -175,14 +216,61 @@ export function DailyRoutinePage() {
     }
   }
 
-  async function deleteActivity(activity: Activity) {
-    if (!confirm(`Delete "${activity.name}"? Past completions will also be removed.`)) return;
+  /**
+   * Soft-delete: flips is_archived = true. The activity stays in the database
+   * along with every past completion, so charts and history are preserved —
+   * the row is just hidden from the active list.
+   */
+  async function archiveActivity(activity: Activity) {
+    const prev = activities;
+    setActivities((a) => a.filter((x) => x.id !== activity.id));
+    const { error } = await supabase
+      .from("activities")
+      .update({ is_archived: true })
+      .eq("id", activity.id);
+    if (error) {
+      setActivities(prev);
+      if (isMissingColumnError(error, "is_archived")) {
+        setError(
+          "Archive isn't available yet — your DB is missing the latest migration. Run `npm run db:push`, or use 'Delete forever' for now."
+        );
+      } else {
+        setError(error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Hard delete: removes the activity row. The FK ON DELETE CASCADE on
+   * activity_completions wipes the entire history with it — irreversible.
+   */
+  async function hardDeleteActivity(activity: Activity) {
     const prev = activities;
     setActivities((a) => a.filter((x) => x.id !== activity.id));
     const { error } = await supabase.from("activities").delete().eq("id", activity.id);
     if (error) {
       setActivities(prev);
       setError(error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Runs an archive/delete op against the currently-targeted activity with
+   * shared busy-state + close-on-success bookkeeping. The op itself already
+   * surfaces errors via setError, so we swallow the re-throw here.
+   */
+  async function runRemoval(op: (a: Activity) => Promise<void>) {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await op(deleteTarget);
+      setDeleteTarget(null);
+    } catch {
+      /* error already surfaced via setError in the op */
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -193,17 +281,77 @@ export function DailyRoutinePage() {
     category: ActivityCategory | null
   ) {
     if (!user) return;
-    const { data, error } = await supabase
+    const base = { user_id: user.id, name, icon: icon || null, frequency };
+    let { data, error } = await supabase
       .from("activities")
-      .insert({ user_id: user.id, name, icon: icon || null, frequency, category })
+      .insert({ ...base, category })
       .select()
       .single();
+    // If the user hasn't applied the "activities.category" migration yet,
+    // PostgREST returns PGRST204 / mentions the missing column. Retry the
+    // insert without the category column so adding activities still works.
+    if (isMissingColumnError(error, "category")) {
+      const retry = await supabase
+        .from("activities")
+        .insert(base)
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+      if (!error && category) {
+        setError(
+          "Activity added, but the 'category' column isn't in your database yet. Run `npm run db:push` to enable categories."
+        );
+      }
+    }
     if (error) {
       setError(error.message);
       return;
     }
     if (data) setActivities((prev) => [...prev, data]);
     setAddOpen(false);
+  }
+
+  async function handleUpdate(
+    id: string,
+    name: string,
+    icon: string,
+    frequency: Activity["frequency"],
+    category: ActivityCategory | null
+  ) {
+    if (!user) return;
+    const base = { name, icon: icon || null, frequency };
+    let { data, error } = await supabase
+      .from("activities")
+      .update({ ...base, category })
+      .eq("id", id)
+      .select()
+      .single();
+    // Same graceful fallback as handleCreate: retry without `category`
+    // if the column hasn't been migrated yet.
+    if (isMissingColumnError(error, "category")) {
+      const retry = await supabase
+        .from("activities")
+        .update(base)
+        .eq("id", id)
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+      if (!error && category) {
+        setError(
+          "Activity updated, but the 'category' column isn't in your database yet. Run `npm run db:push` to enable categories."
+        );
+      }
+    }
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    if (data) {
+      setActivities((prev) => prev.map((a) => (a.id === id ? data! : a)));
+    }
+    setEditingActivity(null);
   }
 
   const todayDoneCount = activities.filter((a) =>
@@ -497,16 +645,28 @@ export function DailyRoutinePage() {
                         {streak === 1 ? "day" : "days"}
                       </span>
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Delete ${a.name}`}
-                      onClick={() => deleteActivity(a)}
-                      className="h-8 w-8"
-                    >
-                      <Trash2 className="h-4 w-4 text-muted-foreground" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Edit ${a.name}`}
+                        onClick={() => setEditingActivity(a)}
+                        className="h-8 w-8"
+                      >
+                        <Pencil className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Delete ${a.name}`}
+                        onClick={() => setDeleteTarget(a)}
+                        className="h-8 w-8"
+                      >
+                        <Trash2 className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -558,24 +718,69 @@ export function DailyRoutinePage() {
         </CardContent>
       </Card>
 
-      <AddActivityDialog open={addOpen} onClose={() => setAddOpen(false)} onCreate={handleCreate} />
+      <ActivityFormDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        title="Add activity"
+        description="Track a new habit."
+        submitLabel="Add"
+        onSubmit={(name, icon, frequency, category) =>
+          handleCreate(name, icon, frequency, category)
+        }
+      />
+      <ActivityFormDialog
+        open={editingActivity !== null}
+        onClose={() => setEditingActivity(null)}
+        title="Edit activity"
+        description="Update name, icon, frequency, or category."
+        submitLabel="Save"
+        initial={editingActivity}
+        onSubmit={(name, icon, frequency, category) =>
+          editingActivity
+            ? handleUpdate(editingActivity.id, name, icon, frequency, category)
+            : Promise.resolve()
+        }
+      />
+      <DeleteActivityDialog
+        target={deleteTarget}
+        completionCount={
+          // Reuse the Map we already build for per-day check rendering rather
+          // than re-scanning `completions` (up to a year of rows) every render.
+          deleteTarget ? completedByActivity.get(deleteTarget.id)?.size ?? 0 : 0
+        }
+        busy={deleting}
+        onClose={() => {
+          if (deleting) return;
+          setDeleteTarget(null);
+        }}
+        onArchive={() => runRemoval(archiveActivity)}
+        onHardDelete={() => runRemoval(hardDeleteActivity)}
+      />
     </div>
   );
 }
 
-function AddActivityDialog({
+function ActivityFormDialog({
   open,
   onClose,
-  onCreate,
+  onSubmit,
+  initial,
+  title,
+  description,
+  submitLabel,
 }: {
   open: boolean;
   onClose: () => void;
-  onCreate: (
+  onSubmit: (
     name: string,
     icon: string,
     frequency: Activity["frequency"],
     category: ActivityCategory | null
   ) => Promise<void>;
+  initial?: Activity | null;
+  title: string;
+  description: string;
+  submitLabel: string;
 }) {
   const [name, setName] = useState("");
   const [icon, setIcon] = useState("");
@@ -583,27 +788,31 @@ function AddActivityDialog({
   const [category, setCategory] = useState<ActivityCategory | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Re-seed form whenever the dialog opens. When `initial` is provided we
+  // hydrate from it (edit mode); otherwise we reset to blanks (add mode).
   useEffect(() => {
     if (!open) {
-      setName("");
-      setIcon("");
-      setFrequency("daily");
-      setCategory(null);
       setSaving(false);
+      return;
     }
-  }, [open]);
+    setName(initial?.name ?? "");
+    setIcon(initial?.icon ?? "");
+    setFrequency(initial?.frequency ?? "daily");
+    setCategory(initial?.category ?? null);
+    setSaving(false);
+  }, [open, initial]);
 
-  async function onSubmit(e: FormEvent) {
+  async function handleFormSubmit(e: FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
     setSaving(true);
-    await onCreate(name.trim(), icon.trim(), frequency, category);
+    await onSubmit(name.trim(), icon.trim(), frequency, category);
     setSaving(false);
   }
 
   return (
-    <Dialog open={open} onClose={onClose} title="Add activity" description="Track a new habit.">
-      <form onSubmit={onSubmit} className="space-y-4">
+    <Dialog open={open} onClose={onClose} title={title} description={description}>
+      <form onSubmit={handleFormSubmit} className="space-y-4">
         <div className="space-y-1.5">
           <Label htmlFor="act-name">Name</Label>
           <Input
@@ -669,7 +878,7 @@ function AddActivityDialog({
             Cancel
           </Button>
           <Button type="submit" disabled={saving || !name.trim()}>
-            {saving ? "Saving…" : "Add"}
+            {saving ? "Saving…" : submitLabel}
           </Button>
         </div>
       </form>
@@ -681,4 +890,109 @@ function ymdDaysAgo(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
   return ymd(d);
+}
+
+/**
+ * Asks the user how they want to remove an activity:
+ *   - Archive (recommended) — hide from list, keep all completion history.
+ *   - Delete forever — wipe the activity and every past completion.
+ * Cancel just closes the dialog.
+ */
+function DeleteActivityDialog({
+  target,
+  completionCount,
+  busy,
+  onClose,
+  onArchive,
+  onHardDelete,
+}: {
+  target: Activity | null;
+  completionCount: number;
+  busy: boolean;
+  onClose: () => void;
+  onArchive: () => void | Promise<void>;
+  onHardDelete: () => void | Promise<void>;
+}) {
+  return (
+    <Dialog
+      open={target !== null}
+      onClose={onClose}
+      title={target ? `Remove "${target.name}"?` : "Remove activity?"}
+      description="Choose how to handle this activity and its history."
+    >
+      <div className="space-y-3">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onArchive()}
+          className={cn(
+            "w-full text-left rounded-lg border border-border bg-card p-3 transition-colors",
+            "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+            busy && "opacity-50 cursor-not-allowed"
+          )}
+        >
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-md bg-emerald-500/10 p-2 ring-1 ring-emerald-500/20">
+              <Archive className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">Archive</span>
+                <span className="text-[10px] font-medium uppercase tracking-wider rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-500/20 px-1.5 py-0.5">
+                  Recommended
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Hide from the active list, but keep the activity and{" "}
+                <span className="font-medium text-foreground">
+                  {completionCount}{" "}
+                  {completionCount === 1 ? "past completion" : "past completions"}
+                </span>{" "}
+                for your records and charts. You can restore it later.
+              </p>
+            </div>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onHardDelete()}
+          className={cn(
+            "w-full text-left rounded-lg border border-destructive/30 bg-destructive/5 p-3 transition-colors",
+            "hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+            busy && "opacity-50 cursor-not-allowed"
+          )}
+        >
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-md bg-destructive/15 p-2 ring-1 ring-destructive/30">
+              <Trash2 className="h-4 w-4 text-destructive" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-destructive">
+                  Delete forever
+                </span>
+                <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Permanently remove the activity and{" "}
+                <span className="font-medium text-foreground">
+                  all {completionCount}{" "}
+                  {completionCount === 1 ? "past completion" : "past completions"}
+                </span>
+                . This cannot be undone.
+              </p>
+            </div>
+          </div>
+        </button>
+
+        <div className="flex justify-end pt-1">
+          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
 }

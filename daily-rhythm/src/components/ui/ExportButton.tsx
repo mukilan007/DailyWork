@@ -81,7 +81,7 @@ export function ExportButton({
           role="menu"
           aria-label="Export format"
           className={cn(
-            "absolute right-0 z-50 mt-1 w-44 rounded-md border border-border bg-popover text-popover-foreground shadow-lg",
+            "absolute right-0 z-50 mt-1 w-44 rounded-md border border-border bg-card text-card-foreground shadow-lg",
             "py-1"
           )}
         >

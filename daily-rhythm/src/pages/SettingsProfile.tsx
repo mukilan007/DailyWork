@@ -22,6 +22,12 @@ import { cn } from "@/lib/utils";
 
 const DELETE_CONFIRM_PHRASE = "delete my account";
 
+/** Single message used wherever the account is missing an email address.
+ *  Used by both change-password and password-reset flows since both depend
+ *  on `user.email` being set. */
+const NO_EMAIL_MSG =
+  "No email on file for this account. Contact support to recover access.";
+
 const RETENTION_DEFAULT = 24;
 const RETENTION_OPTIONS: { value: number; label: string }[] = [
   { value: 1, label: "1 month" },
@@ -34,12 +40,21 @@ const RETENTION_OPTIONS: { value: number; label: string }[] = [
 export function SettingsProfilePage() {
   const { user, signOut } = useAuth();
   const [displayName, setDisplayName] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  // OTP-based recovery: when the user clicks "Forgot password", we ask
+  // Supabase to email a 6-digit code (the `{{ .Token }}` part of the reset
+  // template). They paste it here + a new password, we call verifyOtp()
+  // then updateUser() — no link-click needed.
+  const [resetMode, setResetMode] = useState<"idle" | "code-sent">("idle");
+  const [otpCode, setOtpCode] = useState("");
   const [profileMsg, setProfileMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [pwMsg, setPwMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [savingProfile, setSavingProfile] = useState(false);
-  const [savingPw, setSavingPw] = useState(false);
+  // Single state for all password-related actions so they can't race each
+  // other — submitting any one disables every other password button.
+  const [pwAction, setPwAction] = useState<"idle" | "changing" | "resetting" | "verifying">("idle");
   const [retention, setRetention] = useState<number>(RETENTION_DEFAULT);
   const [retentionAvailable, setRetentionAvailable] = useState(true);
   const [savingRetention, setSavingRetention] = useState(false);
@@ -109,16 +124,125 @@ export function SettingsProfilePage() {
 
   async function changePassword(e: FormEvent) {
     e.preventDefault();
-    setSavingPw(true);
+    if (!user?.email) {
+      setPwMsg({ kind: "error", text: NO_EMAIL_MSG });
+      return;
+    }
+    if (currentPassword === newPassword) {
+      setPwMsg({ kind: "error", text: "New password must differ from the current one." });
+      return;
+    }
+    setPwAction("changing");
     setPwMsg(null);
+
+    // Step 1: re-authenticate. signInWithPassword on the same session is the
+    // canonical way to verify the current password in Supabase — it refreshes
+    // the session in place on success, and returns an explicit error on
+    // failure (so we can surface a "wrong password" message without exposing
+    // detail about whether the email exists).
+    const { error: reauthError } = await supabase.auth.signInWithPassword({
+      email: user.email,
+      password: currentPassword,
+    });
+    if (reauthError) {
+      setPwAction("idle");
+      setPwMsg({ kind: "error", text: "Current password is incorrect." });
+      return;
+    }
+
+    // Step 2: now safe to rotate the password.
     const { error } = await supabase.auth.updateUser({ password: newPassword });
-    setSavingPw(false);
+    setPwAction("idle");
     if (error) {
       setPwMsg({ kind: "error", text: error.message });
     } else {
       setPwMsg({ kind: "success", text: "Password updated." });
+      setCurrentPassword("");
       setNewPassword("");
     }
+  }
+
+  /**
+   * Email-based recovery flow. Used when the user doesn't remember their
+   * current password — they click "Forgot password" and Supabase emails a
+   * one-time reset link that lands on /auth (or wherever your reset handler
+   * lives) with a recovery token in the URL.
+   */
+  async function sendPasswordResetEmail() {
+    if (!user?.email) {
+      setPwMsg({ kind: "error", text: NO_EMAIL_MSG });
+      return;
+    }
+    setPwAction("resetting");
+    setPwMsg(null);
+    const { error } = await supabase.auth.resetPasswordForEmail(user.email, {
+      redirectTo: `${window.location.origin}/auth`,
+    });
+    setPwAction("idle");
+    if (error) {
+      setPwMsg({ kind: "error", text: error.message });
+    } else {
+      setResetMode("code-sent");
+      setOtpCode("");
+      setPwMsg({
+        kind: "success",
+        text: `Code sent to ${user.email}. Enter it below within 1 hour.`,
+      });
+    }
+  }
+
+  /**
+   * OTP-based recovery completion. Verifies the 6-digit code Supabase
+   * emailed, which establishes a temporary recovery session, then rotates
+   * the password in that session. On success, falls back to "idle" so the
+   * regular current-password form is shown again.
+   */
+  async function verifyCodeAndUpdate(e: FormEvent) {
+    e.preventDefault();
+    if (!user?.email) {
+      setPwMsg({ kind: "error", text: NO_EMAIL_MSG });
+      return;
+    }
+    const token = otpCode.trim();
+    if (!token) {
+      setPwMsg({ kind: "error", text: "Enter the code from the email." });
+      return;
+    }
+    setPwAction("verifying");
+    setPwMsg(null);
+
+    // Step 1: verify OTP. type:"recovery" matches resetPasswordForEmail().
+    // On success, Supabase upgrades the current session to a recovery
+    // session that's allowed to call updateUser({ password }).
+    const { error: verifyError } = await supabase.auth.verifyOtp({
+      email: user.email,
+      token,
+      type: "recovery",
+    });
+    if (verifyError) {
+      setPwAction("idle");
+      setPwMsg({ kind: "error", text: "Invalid or expired code. Request a new one." });
+      return;
+    }
+
+    // Step 2: rotate the password.
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    setPwAction("idle");
+    if (error) {
+      setPwMsg({ kind: "error", text: error.message });
+    } else {
+      setPwMsg({ kind: "success", text: "Password updated." });
+      setCurrentPassword("");
+      setNewPassword("");
+      setOtpCode("");
+      setResetMode("idle");
+    }
+  }
+
+  function cancelCodeFlow() {
+    setResetMode("idle");
+    setOtpCode("");
+    setPwMsg(null);
   }
 
   async function saveRetention(e: FormEvent) {
@@ -216,29 +340,131 @@ export function SettingsProfilePage() {
           <CardTitle className="text-base flex items-center gap-2">
             <KeyRound className="h-4 w-4 text-primary" /> Change password
           </CardTitle>
-          <CardDescription>Updates immediately — you&rsquo;ll stay signed in on this device.</CardDescription>
+          <CardDescription>
+            Confirm with your current password to change it. Updates immediately —
+            you&rsquo;ll stay signed in on this device.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={changePassword} className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="newPassword">New password</Label>
-              <PasswordInput
-                id="newPassword"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                autoComplete="new-password"
-                minLength={6}
-                required
-              />
-              <p className="text-xs text-muted-foreground">Minimum 6 characters.</p>
-            </div>
+          {resetMode === "idle" ? (
+            <form onSubmit={changePassword} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="currentPassword">Current password</Label>
+                <PasswordInput
+                  id="currentPassword"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+              </div>
 
-            {pwMsg && <FormMessage msg={pwMsg} />}
+              <div className="space-y-1.5">
+                <Label htmlFor="newPassword">New password</Label>
+                <PasswordInput
+                  id="newPassword"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  autoComplete="new-password"
+                  minLength={6}
+                  required
+                />
+                <p className="text-xs text-muted-foreground">Minimum 6 characters.</p>
+              </div>
 
-            <Button type="submit" disabled={savingPw}>
-              {savingPw ? "Updating…" : "Update password"}
-            </Button>
-          </form>
+              {pwMsg && <FormMessage msg={pwMsg} />}
+
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  type="submit"
+                  disabled={pwAction !== "idle" || !currentPassword || !newPassword}
+                >
+                  {pwAction === "changing" ? "Updating…" : "Update password"}
+                </Button>
+                <button
+                  type="button"
+                  onClick={sendPasswordResetEmail}
+                  disabled={pwAction !== "idle" || !user?.email}
+                  className={cn(
+                    "text-xs text-muted-foreground underline-offset-2 hover:underline hover:text-foreground",
+                    "disabled:opacity-60 disabled:cursor-not-allowed"
+                  )}
+                >
+                  {pwAction === "resetting"
+                    ? "Sending code…"
+                    : "Forgot current password? Email me a code"}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={verifyCodeAndUpdate} className="space-y-4">
+              <div className="rounded-md border border-input bg-muted/30 p-3 text-xs text-muted-foreground">
+                We emailed an 8-digit code to <span className="font-medium text-foreground">{user?.email}</span>.
+                Enter it below with your new password. The code expires in 1 hour.
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="otpCode">Verification code</Label>
+                <Input
+                  id="otpCode"
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="12345678"
+                  maxLength={8}
+                  className="font-mono tracking-widest text-base placeholder:text-muted-foreground/40 placeholder:font-normal"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="newPasswordOtp">New password</Label>
+                <PasswordInput
+                  id="newPasswordOtp"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  autoComplete="new-password"
+                  minLength={6}
+                  required
+                />
+                <p className="text-xs text-muted-foreground">Minimum 6 characters.</p>
+              </div>
+
+              {pwMsg && <FormMessage msg={pwMsg} />}
+
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  type="submit"
+                  disabled={pwAction !== "idle" || otpCode.length !== 8 || !newPassword}
+                >
+                  {pwAction === "verifying" ? "Verifying…" : "Verify code & update password"}
+                </Button>
+                <button
+                  type="button"
+                  onClick={sendPasswordResetEmail}
+                  disabled={pwAction !== "idle" || !user?.email}
+                  className={cn(
+                    "text-xs text-muted-foreground underline-offset-2 hover:underline hover:text-foreground",
+                    "disabled:opacity-60 disabled:cursor-not-allowed"
+                  )}
+                >
+                  {pwAction === "resetting" ? "Sending…" : "Resend code"}
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelCodeFlow}
+                  disabled={pwAction !== "idle"}
+                  className={cn(
+                    "text-xs text-muted-foreground underline-offset-2 hover:underline hover:text-foreground",
+                    "disabled:opacity-60 disabled:cursor-not-allowed"
+                  )}
+                >
+                  Use current password instead
+                </button>
+              </div>
+            </form>
+          )}
         </CardContent>
       </Card>
 
