@@ -1,0 +1,3 @@
+# Local CLI project name. Has nothing to do with your hosted project ref —
+# that's set per-machine via `supabase link --project-ref <id>`.
+project_id = "daily-rhythm"

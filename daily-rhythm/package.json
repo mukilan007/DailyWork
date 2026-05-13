@@ -1,0 +1,41 @@
+{
+  "name": "daily-rhythm",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "tsc -b --noEmit",
+    "db:link": "node ../tools/db/db-link.mjs",
+    "db:new": "supabase migration new",
+    "db:lint": "node ../tools/db/migration-lint.mjs",
+    "db:plan": "supabase db diff --linked --schema public",
+    "db:push": "npm run db:lint && supabase db push",
+    "db:reset": "supabase db reset --linked",
+    "db:dump": "npm run db:dump:schema && npm run db:dump:data",
+    "db:dump:schema": "supabase db dump --linked -f backup-schema.sql",
+    "db:dump:data": "supabase db dump --linked --data-only -f backup-data.sql"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "date-fns": "^3.6.0",
+    "lucide-react": "^0.460.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.27.0",
+    "recharts": "^2.13.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "supabase": "^2.98.2",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vite": "^8.0.11"
+  }
+}
