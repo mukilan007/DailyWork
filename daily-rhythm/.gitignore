@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.log
 coverage/
+*.tsbuildinfo
 
 # Secrets — `.env.example` (no values) IS tracked.
 .env
