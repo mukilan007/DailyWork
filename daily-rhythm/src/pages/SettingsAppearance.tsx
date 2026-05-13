@@ -1,10 +1,21 @@
-import { Sun, Moon, Monitor, Palette, Check } from "lucide-react";
+import { Sun, Moon, Monitor, Palette, Check, Sparkles } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useTheme, Theme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 
-const OPTIONS: { value: Theme; label: string; icon: typeof Sun; description: string; preview: string }[] = [
+interface ThemeOption {
+  value: Theme;
+  label: string;
+  icon: typeof Sun;
+  description: string;
+  /** Tailwind classes used for the small swatch on top of the card. */
+  preview: string;
+  /** Optional decorative element (panda) rendered inside the swatch. */
+  previewExtra?: React.ReactNode;
+}
+
+const OPTIONS: ThemeOption[] = [
   {
     value: "light",
     label: "Light",
@@ -26,6 +37,22 @@ const OPTIONS: { value: Theme; label: string; icon: typeof Sun; description: str
     description: "Follows your OS preference",
     preview: "bg-gradient-to-br from-white via-white to-zinc-900 border-zinc-300 dark:border-zinc-700",
   },
+  {
+    value: "panda",
+    label: "Panda",
+    icon: Sparkles,
+    description: "Bamboo greens, pink accents and panda-print backgrounds",
+    preview:
+      "bg-gradient-to-br from-emerald-100 via-rose-100 to-amber-100 border-emerald-300 overflow-hidden",
+    previewExtra: (
+      <img
+        src="/panda.svg"
+        alt=""
+        aria-hidden
+        className="absolute -bottom-1 right-1 h-9 w-9 drop-shadow-sm"
+      />
+    ),
+  },
 ];
 
 export function SettingsAppearancePage() {
@@ -44,10 +71,12 @@ export function SettingsAppearancePage() {
           <CardTitle className="text-base flex items-center gap-2">
             <Palette className="h-4 w-4 text-primary" /> Theme
           </CardTitle>
-          <CardDescription>Choose between light, dark, or follow your operating system.</CardDescription>
+          <CardDescription>
+            Pick between light, dark, your OS preference, or the playful Panda theme.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             {OPTIONS.map((opt) => {
               const Icon = opt.icon;
               const active = theme === opt.value;
@@ -72,7 +101,15 @@ export function SettingsAppearancePage() {
                       <Check className="h-3 w-3" strokeWidth={3} />
                     </span>
                   )}
-                  <div className={cn("h-10 w-full rounded-md border mb-3", opt.preview)} aria-hidden />
+                  <div
+                    className={cn(
+                      "relative h-10 w-full rounded-md border mb-3",
+                      opt.preview
+                    )}
+                    aria-hidden
+                  >
+                    {opt.previewExtra}
+                  </div>
                   <div className="flex items-center gap-2">
                     <Icon className="h-4 w-4" />
                     <div className="font-medium text-sm">{opt.label}</div>

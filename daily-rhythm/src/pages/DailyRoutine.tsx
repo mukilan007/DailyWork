@@ -525,6 +525,51 @@ export function DailyRoutinePage() {
         </div>
       )}
 
+      {!loading && activities.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{isCurrentWeek ? "This week" : "Week overview"}</CardTitle>
+            <CardDescription>Total completions per day, {weekRangeLabel}.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-end gap-2 h-32">
+              {weekKeys.map((k, i) => {
+                const count = completions.filter((c) => c.completed_on === k).length;
+                const max = activities.length || 1;
+                const heightPct = Math.min(100, (count / max) * 100);
+                const isCurrent = k === today;
+                return (
+                  <div key={k} className="flex-1 flex flex-col items-center gap-1.5">
+                    <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
+                      {count > 0 ? count : ""}
+                    </span>
+                    <div className="flex-1 w-full flex items-end">
+                      <div
+                        className={cn(
+                          "w-full rounded-t-md transition-all",
+                          isCurrent ? "bg-primary" : "bg-primary/60",
+                          count === 0 && "bg-muted"
+                        )}
+                        style={{ height: `${Math.max(heightPct, 4)}%` }}
+                        aria-label={`${count} completions on ${DAY_LABELS[i]}`}
+                      />
+                    </div>
+                    <span
+                      className={cn(
+                        "text-[10px]",
+                        isCurrent ? "text-primary font-semibold" : "text-muted-foreground"
+                      )}
+                    >
+                      {DAY_LABELS[i]}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {loading ? (
         <SkeletonList rows={3} />
       ) : activities.length === 0 ? (
@@ -674,49 +719,6 @@ export function DailyRoutinePage() {
           })}
         </div>
       )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{isCurrentWeek ? "This week" : "Week overview"}</CardTitle>
-          <CardDescription>Total completions per day, {weekRangeLabel}.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-end gap-2 h-32">
-            {weekKeys.map((k, i) => {
-              const count = completions.filter((c) => c.completed_on === k).length;
-              const max = activities.length || 1;
-              const heightPct = Math.min(100, (count / max) * 100);
-              const isCurrent = k === today;
-              return (
-                <div key={k} className="flex-1 flex flex-col items-center gap-1.5">
-                  <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
-                    {count > 0 ? count : ""}
-                  </span>
-                  <div className="flex-1 w-full flex items-end">
-                    <div
-                      className={cn(
-                        "w-full rounded-t-md transition-all",
-                        isCurrent ? "bg-primary" : "bg-primary/60",
-                        count === 0 && "bg-muted"
-                      )}
-                      style={{ height: `${Math.max(heightPct, 4)}%` }}
-                      aria-label={`${count} completions on ${DAY_LABELS[i]}`}
-                    />
-                  </div>
-                  <span
-                    className={cn(
-                      "text-[10px]",
-                      isCurrent ? "text-primary font-semibold" : "text-muted-foreground"
-                    )}
-                  >
-                    {DAY_LABELS[i]}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
 
       <ActivityFormDialog
         open={addOpen}

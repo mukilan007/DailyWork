@@ -3,24 +3,41 @@ import { Link } from "react-router-dom";
 import {
   Activity as ActivityIcon,
   Dumbbell,
-  Heart,
   Droplet,
   TrendingUp,
   ArrowRight,
+  CalendarRange,
+  CalendarHeart,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { SkeletonStatGrid, SkeletonCard } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase, isMissingColumnError } from "@/lib/supabase";
-import type { Activity, ActivityCompletion, Workout, GlucoseReading } from "@/types";
+import type { Activity, ActivityCompletion, Workout, GlucoseReading, PeriodLog } from "@/types";
 import { ymd, weekDates, DAY_LABELS, formatDate } from "@/lib/dates";
 import { cn } from "@/lib/utils";
+import { computeCycleInsights } from "./HealthPeriod";
+
+/** Available time windows for the dashboard's time-based data. Keeping the
+ *  options in one table lets the selector, query window, and stat labels
+ *  all read from the same source. */
+const RANGE_OPTIONS = [
+  { id: "7d", label: "7 days", days: 7 },
+  { id: "30d", label: "30 days", days: 30 },
+  { id: "90d", label: "90 days", days: 90 },
+  { id: "1y", label: "1 year", days: 365 },
+] as const;
+type RangeId = (typeof RANGE_OPTIONS)[number]["id"];
 
 interface HomeData {
   activities: Activity[];
   completions: ActivityCompletion[];
   workouts: Workout[];
   glucose: GlucoseReading[];
+  /** Recent period logs — fetched outside the range filter because cycle
+   *  prediction needs at least two prior period starts regardless of the
+   *  dashboard's selected window. */
+  periodLogs: PeriodLog[];
   displayName: string | null;
 }
 
@@ -28,28 +45,43 @@ export function HomePage() {
   const { user } = useAuth();
   const [data, setData] = useState<HomeData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Selected time window for all time-based panels. Re-fetches data when
+   *  changed so workouts/glucose/completions reflect the chosen range. */
+  const [rangeId, setRangeId] = useState<RangeId>("7d");
+  const range = useMemo(
+    () => RANGE_OPTIONS.find((r) => r.id === rangeId) ?? RANGE_OPTIONS[0],
+    [rangeId]
+  );
 
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
     (async () => {
-      const sevenDaysAgo = ymdDaysAgo(7);
+      const rangeStartYmd = ymdDaysAgo(range.days);
+      const rangeStartIso = new Date(`${rangeStartYmd}T00:00:00`).toISOString();
       // Prefer the server-side `is_archived = false` filter so Postgres can
       // use the partial index; fall back to an unfiltered query if the
       // user's DB doesn't have the column yet.
-      const [activitiesRes, completionsRes, workoutsRes, glucoseRes, profileRes] = await Promise.all([
+      const [activitiesRes, completionsRes, workoutsRes, glucoseRes, periodRes, profileRes] = await Promise.all([
         supabase.from("activities").select("*").eq("is_archived", false),
-        supabase.from("activity_completions").select("*").gte("completed_on", sevenDaysAgo),
+        supabase.from("activity_completions").select("*").gte("completed_on", rangeStartYmd),
         supabase
           .from("workouts")
           .select("*")
+          .gte("performed_at", rangeStartIso)
           .order("performed_at", { ascending: false })
-          .limit(5),
+          .limit(100),
         supabase
           .from("glucose_readings")
           .select("*")
+          .gte("measured_at", rangeStartIso)
           .order("measured_at", { ascending: false })
-          .limit(5),
+          .limit(200),
+        supabase
+          .from("period_logs")
+          .select("*")
+          .order("log_date", { ascending: false })
+          .limit(180),
         supabase.from("profiles").select("display_name").eq("user_id", user.id).maybeSingle(),
       ]);
       if (cancelled) return;
@@ -68,6 +100,7 @@ export function HomePage() {
         completionsRes.error ??
         workoutsRes.error ??
         glucoseRes.error ??
+        periodRes.error ??
         profileRes.error;
       if (firstError) {
         setError(firstError.message);
@@ -87,13 +120,14 @@ export function HomePage() {
         completions: visibleCompletions,
         workouts: workoutsRes.data ?? [],
         glucose: glucoseRes.data ?? [],
+        periodLogs: periodRes.data ?? [],
         displayName: profileRes.data?.display_name ?? null,
       });
     })();
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user, range.days]);
 
   const today = ymd();
   const greeting = useMemo(() => greetingFor(new Date()), []);
@@ -104,6 +138,7 @@ export function HomePage() {
     return (
       <div className="space-y-6">
         <Hero greeting={greeting} name="" />
+        <RangeSelector value={rangeId} onChange={setRangeId} />
         <ErrorAlert message={error} />
       </div>
     );
@@ -113,6 +148,7 @@ export function HomePage() {
     return (
       <div className="space-y-6">
         <Hero greeting={greeting} name="…" />
+        <RangeSelector value={rangeId} onChange={setRangeId} />
         <SkeletonStatGrid />
         <div className="grid gap-4 lg:grid-cols-2">
           <SkeletonCard rows={4} />
@@ -126,19 +162,30 @@ export function HomePage() {
   const todayTotal = data.activities.length;
   const todayPct = todayTotal === 0 ? 0 : Math.round((todayDone / todayTotal) * 100);
 
-  const weeklyCompletions = data.completions.length;
-  const weeklyPossible = todayTotal * 7;
-  const weeklyPct = weeklyPossible === 0 ? 0 : Math.round((weeklyCompletions / weeklyPossible) * 100);
+  // Range-wide completion %: total completions ÷ (active activities × days in range).
+  const rangeCompletions = data.completions.length;
+  const rangePossible = todayTotal * range.days;
+  const rangePct = rangePossible === 0 ? 0 : Math.round((rangeCompletions / rangePossible) * 100);
 
   const lastGlucose = data.glucose[0];
   const inRange = data.glucose.filter((g) => g.value_mg_dl >= 70 && g.value_mg_dl <= 180).length;
   const inRangePct = data.glucose.length === 0 ? null : Math.round((inRange / data.glucose.length) * 100);
+  const glucoseAvg =
+    data.glucose.length === 0
+      ? null
+      : Math.round(data.glucose.reduce((s, g) => s + g.value_mg_dl, 0) / data.glucose.length);
+
+  // Cycle insights reuse the same algorithm as the Period Tracker page so the
+  // "next predicted" date on the dashboard never drifts from the source of truth.
+  const cycle = computeCycleInsights(data.periodLogs);
 
   const name = data.displayName?.trim() || user?.email?.split("@")[0] || "there";
 
   return (
     <div className="space-y-6">
       <Hero greeting={greeting} name={name} />
+
+      <RangeSelector value={rangeId} onChange={setRangeId} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
@@ -151,26 +198,40 @@ export function HomePage() {
         <StatCard
           accent="emerald"
           icon={<TrendingUp className="h-4 w-4" />}
-          label="This week"
-          value={`${weeklyPct}%`}
-          hint={`${weeklyCompletions} completions`}
+          label={`Last ${range.label}`}
+          value={`${rangePct}%`}
+          hint={`${rangeCompletions} completion${rangeCompletions === 1 ? "" : "s"}`}
         />
         <StatCard
           accent="indigo"
           icon={<Dumbbell className="h-4 w-4" />}
           label="Workouts"
           value={String(data.workouts.length)}
-          hint={data.workouts[0] ? `Last: ${formatDate(data.workouts[0].performed_at)}` : "No workouts yet"}
+          hint={
+            data.workouts[0]
+              ? `Last: ${formatDate(data.workouts[0].performed_at)}`
+              : `None in last ${range.label}`
+          }
         />
         <StatCard
           accent="rose"
           icon={<Droplet className="h-4 w-4" />}
           label="In range"
           value={inRangePct === null ? "—" : `${inRangePct}%`}
-          hint={lastGlucose ? `Last: ${lastGlucose.value_mg_dl} mg/dL` : "No readings yet"}
+          hint={
+            lastGlucose
+              ? `Last: ${lastGlucose.value_mg_dl} mg/dL · ${data.glucose.length} reading${data.glucose.length === 1 ? "" : "s"}`
+              : `No readings in last ${range.label}`
+          }
         />
       </div>
 
+      {/* Rows below intentionally mirror the sidebar's nav order:
+          Daily Routine → Gym Workout → Period Tracker → Diabetes.
+          Reading order (top→bottom, left→right) follows the sidebar so the
+          dashboard scans the same way users navigate the app. */}
+
+      {/* Daily Routine row */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -228,6 +289,7 @@ export function HomePage() {
         </Card>
       </div>
 
+      {/* Gym Workout + Period Tracker row */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -246,54 +308,114 @@ export function HomePage() {
               <p className="text-sm text-muted-foreground">No workouts logged yet.</p>
             ) : (
               <ul className="divide-y divide-border -mt-2">
-                {data.workouts.map((w) => (
+                {data.workouts.slice(0, 5).map((w) => (
                   <li key={w.id} className="flex items-center justify-between py-2.5 text-sm">
                     <span className="truncate">{w.name}</span>
                     <span className="text-muted-foreground text-xs">{formatDate(w.performed_at)}</span>
                   </li>
                 ))}
+                {data.workouts.length > 5 && (
+                  <li className="pt-2 text-[11px] text-muted-foreground">
+                    +{data.workouts.length - 5} more in last {range.label}
+                  </li>
+                )}
               </ul>
             )}
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Heart className="h-4 w-4 text-rose-500" /> Health
-            </CardTitle>
-            <div className="flex gap-3 text-xs font-medium">
-              <Link to="/health/diabetes" className="text-primary hover:underline">
-                Diabetes
-              </Link>
-              <Link to="/health/period" className="text-primary hover:underline">
-                Period
-              </Link>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {data.glucose.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No glucose readings yet.</p>
-            ) : (
-              <ul className="divide-y divide-border -mt-2">
-                {data.glucose.map((g) => (
-                  <li key={g.id} className="flex items-center justify-between py-2.5 text-sm">
-                    <span>
-                      <span className={cn("font-semibold", glucoseColor(g.value_mg_dl))}>
-                        {g.value_mg_dl}
-                      </span>{" "}
-                      <span className="text-muted-foreground text-xs">
-                        mg/dL · {g.meal_context?.replace(/_/g, " ") ?? "—"}
-                      </span>
-                    </span>
-                    <span className="text-muted-foreground text-xs">{formatDate(g.measured_at)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+        <SummaryCard
+          to="/health/period"
+          title="Period"
+          icon={<CalendarHeart className="h-4 w-4 text-rose-500" />}
+          rows={[
+            { label: "Last period", value: formatYmd(cycle.lastPeriodStart) },
+            {
+              label: "Next predicted",
+              value: formatYmd(cycle.predictedNext),
+              hint:
+                cycle.predictedNext === null && cycle.standardNext
+                  ? `Standard: ${formatYmd(cycle.standardNext)}`
+                  : undefined,
+            },
+            {
+              label: "Avg cycle",
+              value: cycle.avgCycleDays === null ? "—" : `${cycle.avgCycleDays} days`,
+              hint:
+                cycle.cycleCount > 0
+                  ? `From ${cycle.cycleCount} cycle${cycle.cycleCount === 1 ? "" : "s"}`
+                  : "Need 2+ cycles",
+            },
+          ]}
+          emptyMessage={cycle.lastPeriodStart === null ? "No period logged yet." : null}
+        />
       </div>
+
+      {/* Diabetes — summary stats and recent readings combined into one card
+          so the dashboard stays compact and leaves room for future panels. */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Droplet className="h-4 w-4 text-rose-500" /> Diabetes
+          </CardTitle>
+          <Link
+            to="/health/diabetes"
+            className="text-xs font-medium text-primary hover:underline inline-flex items-center gap-1"
+          >
+            Open <ArrowRight className="h-3 w-3" />
+          </Link>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Compact stat row — last reading / average / in-range. */}
+          <div className="grid grid-cols-3 gap-3 rounded-lg border bg-muted/30 p-3">
+            <DiabetesStat
+              label="Last reading"
+              value={lastGlucose ? `${lastGlucose.value_mg_dl}` : "—"}
+              hint={lastGlucose ? `${formatDate(lastGlucose.measured_at)} · mg/dL` : "No data"}
+            />
+            <DiabetesStat
+              label="Average"
+              value={glucoseAvg === null ? "—" : `${glucoseAvg}`}
+              hint={glucoseAvg === null ? "No data" : `Last ${range.label} · mg/dL`}
+            />
+            <DiabetesStat
+              label="In range"
+              value={inRangePct === null ? "—" : `${inRangePct}%`}
+              hint={
+                data.glucose.length > 0
+                  ? `${inRange} of ${data.glucose.length}`
+                  : "No data"
+              }
+            />
+          </div>
+
+          {/* Recent readings list. */}
+          {data.glucose.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No glucose readings yet.</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {data.glucose.slice(0, 5).map((g) => (
+                <li key={g.id} className="flex items-center justify-between py-2.5 text-sm">
+                  <span>
+                    <span className={cn("font-semibold", glucoseColor(g.value_mg_dl))}>
+                      {g.value_mg_dl}
+                    </span>{" "}
+                    <span className="text-muted-foreground text-xs">
+                      mg/dL · {g.meal_context?.replace(/_/g, " ") ?? "—"}
+                    </span>
+                  </span>
+                  <span className="text-muted-foreground text-xs">{formatDate(g.measured_at)}</span>
+                </li>
+              ))}
+              {data.glucose.length > 5 && (
+                <li className="pt-2 text-[11px] text-muted-foreground">
+                  +{data.glucose.length - 5} more in last {range.label}
+                </li>
+              )}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -315,6 +437,117 @@ function Hero({ greeting, name }: { greeting: string; name: string }) {
       <p className="mt-1 text-sm text-muted-foreground">
         Here&rsquo;s a snapshot of your routines, workouts, and health.
       </p>
+    </div>
+  );
+}
+
+function RangeSelector({
+  value,
+  onChange,
+}: {
+  value: RangeId;
+  onChange: (id: RangeId) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <CalendarRange className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="font-medium text-muted-foreground">Range:</span>
+      <div
+        role="radiogroup"
+        aria-label="Dashboard time range"
+        className="inline-flex rounded-md border border-input bg-background p-0.5"
+      >
+        {RANGE_OPTIONS.map((r) => {
+          const active = r.id === value;
+          return (
+            <button
+              key={r.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange(r.id)}
+              className={cn(
+                "px-2.5 py-1 rounded-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                active
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+              )}
+            >
+              {r.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SummaryCard({
+  to,
+  title,
+  icon,
+  rows,
+  emptyMessage,
+}: {
+  to: string;
+  title: string;
+  icon: React.ReactNode;
+  rows: { label: string; value: string; hint?: string }[];
+  emptyMessage: string | null;
+}) {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <CardTitle className="flex items-center gap-2 text-base">
+          {icon} {title}
+        </CardTitle>
+        <Link
+          to={to}
+          className="text-xs font-medium text-primary hover:underline inline-flex items-center gap-1"
+        >
+          Open <ArrowRight className="h-3 w-3" />
+        </Link>
+      </CardHeader>
+      <CardContent>
+        {emptyMessage ? (
+          <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+        ) : (
+          <dl className="divide-y divide-border -mt-2">
+            {rows.map((r) => (
+              <div key={r.label} className="flex items-center justify-between py-2.5">
+                <dt className="text-xs font-medium text-muted-foreground">{r.label}</dt>
+                <dd className="text-right">
+                  <span className="text-sm font-semibold">{r.value}</span>
+                  {r.hint && (
+                    <span className="ml-2 text-[11px] text-muted-foreground">{r.hint}</span>
+                  )}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Compact stat used inside the combined Diabetes card. */
+function DiabetesStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground truncate">
+        {label}
+      </p>
+      <p className="mt-1 text-lg font-semibold tracking-tight truncate">{value}</p>
+      <p className="text-[11px] text-muted-foreground truncate">{hint}</p>
     </div>
   );
 }
@@ -451,4 +684,12 @@ function ymdDaysAgo(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
   return ymd(d);
+}
+
+/** Formats a `YYYY-MM-DD` date string as a localised label without the
+ *  UTC-shift bug `new Date("YYYY-MM-DD")` introduces (which parses as UTC
+ *  midnight and can render as the previous day in negative-offset zones). */
+function formatYmd(s: string | null): string {
+  if (!s) return "—";
+  return formatDate(`${s}T00:00:00`);
 }

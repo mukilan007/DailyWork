@@ -7,6 +7,8 @@ import { HomePage } from "@/pages/Home";
 import { DailyRoutinePage } from "@/pages/DailyRoutine";
 import { TodosPage } from "@/pages/Todos";
 import { GymPage } from "@/pages/Gym";
+import { MotivationPage } from "@/pages/Motivation";
+import { CodingTrackerPage } from "@/pages/CodingTracker";
 import { HealthPeriodPage } from "@/pages/HealthPeriod";
 import { HealthDiabetesPage } from "@/pages/HealthDiabetes";
 import { SettingsProfilePage } from "@/pages/SettingsProfile";
@@ -41,10 +43,13 @@ export default function App() {
           <Routes>
             <Route path="/auth" element={<PublicOnly><AuthPage /></PublicOnly>} />
             <Route element={<ProtectedRoutes />}>
-              <Route path="/" element={<HomePage />} />
+              <Route path="/" element={<MotivationPage />} />
+              <Route path="/dashboard" element={<HomePage />} />
               <Route path="/daily-routine" element={<DailyRoutinePage />} />
               <Route path="/todos" element={<TodosPage />} />
               <Route path="/gym" element={<GymPage />} />
+              <Route path="/coding-tracker" element={<CodingTrackerPage />} />
+              <Route path="/motivation" element={<Navigate to="/" replace />} />
               <Route path="/health/period" element={<HealthPeriodPage />} />
               <Route path="/health/diabetes" element={<HealthDiabetesPage />} />
               <Route path="/settings/profile" element={<SettingsProfilePage />} />

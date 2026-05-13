@@ -71,6 +71,150 @@
     --sidebar-border: 240 6% 16%;
   }
 
+  /* Panda theme — bamboo-green primary with peachy-pink accents, sitting on
+     top of a soft cream backdrop that's overlaid with a tileable pattern of
+     panda heads, paws, bamboo, hearts and sparkles (see /panda-pattern.svg). */
+  .panda {
+    --background: 90 50% 96%;
+    --foreground: 210 24% 14%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 210 24% 14%;
+
+    --primary: 150 60% 34%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 340 80% 94%;
+    --secondary-foreground: 340 55% 28%;
+
+    --muted: 90 30% 92%;
+    --muted-foreground: 210 10% 38%;
+
+    --accent: 340 80% 92%;
+    --accent-foreground: 340 60% 24%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 150 30% 80%;
+    --input: 150 30% 86%;
+    --ring: 150 60% 40%;
+
+    --sidebar: 0 0% 100%;
+    --sidebar-foreground: 210 14% 22%;
+    --sidebar-accent: 150 55% 90%;
+    --sidebar-accent-foreground: 150 60% 22%;
+    --sidebar-border: 150 30% 84%;
+  }
+
+  /* Multi-layered panda background: a vibrant gradient base + a fixed,
+     tileable SVG pattern overlay so the motifs are visible across every
+     page without scrolling out of view. */
+  .panda body {
+    background-color: hsl(var(--background));
+    background-image:
+      url("/panda-pattern.svg"),
+      radial-gradient(ellipse at top left, hsl(150 70% 86% / 0.6), transparent 55%),
+      radial-gradient(ellipse at top right, hsl(340 90% 90% / 0.6), transparent 55%),
+      radial-gradient(ellipse at bottom, hsl(48 95% 88% / 0.5), transparent 60%),
+      linear-gradient(180deg, hsl(150 55% 96%) 0%, hsl(90 50% 96%) 100%);
+    background-size: 240px 240px, auto, auto, auto, auto;
+    background-attachment: fixed, fixed, fixed, fixed, fixed;
+    background-repeat: repeat, no-repeat, no-repeat, no-repeat, no-repeat;
+  }
+
+  /* Cards in panda mode get a real translucency so the panda pattern is
+     clearly visible THROUGH every module — not just in the gaps between
+     cards. Backdrop-blur keeps content fully readable. `isolation` creates
+     a local stacking context so the panda watermark (negative z-index)
+     stays inside the card and behind its content without affecting any
+     absolutely-positioned overlays the card might already contain. */
+  .panda .bg-card {
+    position: relative;
+    isolation: isolate;
+    background-color: hsl(var(--card) / 0.78);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    box-shadow:
+      0 1px 0 hsl(150 50% 90% / 0.9),
+      0 10px 28px -16px hsl(150 60% 30% / 0.28);
+  }
+
+  /* Small panda mascot tucked in the corner of every card so the theme is
+     visible INSIDE each module too, not only behind them. Decorative —
+     pointer-events disabled so it never blocks interactions. */
+  .panda .bg-card::after {
+    content: "";
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    width: 26px;
+    height: 26px;
+    background: url("/panda.svg") center / contain no-repeat;
+    opacity: 0.18;
+    pointer-events: none;
+    transition: opacity 200ms ease;
+    z-index: -1;
+  }
+  .panda .bg-card:hover::after {
+    opacity: 0.36;
+  }
+
+  .panda .bg-sidebar {
+    position: relative;
+    isolation: isolate;
+    background-color: hsl(var(--sidebar) / 0.82);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  /* Panda-pattern tile covering the ENTIRE sidebar (not just the footer)
+     so the watermark is visible behind every nav link as well as the
+     brand and user areas. `inset: 0` stretches the pseudo-element to all
+     four edges of the sidebar; the pattern tiles in both axes. */
+  .panda .bg-sidebar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: url("/panda-pattern.svg") left top / 200px 200px repeat;
+    opacity: 0.28;
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  /* Decorative top accent ribbon — pink → green → yellow — so every page
+     has a tiny visible reminder of the active theme. */
+  .panda main::before {
+    content: "";
+    display: block;
+    height: 4px;
+    width: 100%;
+    background: linear-gradient(
+      90deg,
+      hsl(340 85% 65%) 0%,
+      hsl(150 65% 45%) 50%,
+      hsl(48 95% 60%) 100%
+    );
+    border-radius: 0 0 8px 8px;
+    margin-bottom: 4px;
+  }
+
+  /* The sidebar brand chip & avatar use bg-primary — swap that solid fill
+     for an actual panda face so the very first thing users notice is the
+     mascot itself. Scoped to the sidebar so panda-mode buttons elsewhere
+     keep their bamboo-green fill. */
+  .panda aside .bg-primary {
+    background-image: url("/panda.svg");
+    background-size: 78% 78%;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-color: hsl(48 95% 92%);
+    border: 1px solid hsl(150 30% 80%);
+  }
+  .panda aside .bg-primary > svg {
+    display: none;
+  }
+
   * {
     @apply border-border;
   }

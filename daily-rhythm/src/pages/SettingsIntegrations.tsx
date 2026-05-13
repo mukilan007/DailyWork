@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Dialog } from "@/components/ui/Dialog";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
@@ -24,9 +25,11 @@ import { supabase } from "@/lib/supabase";
 import { formatRelative } from "@/lib/dates";
 import type { IntegrationProvider, UserIntegration } from "@/types";
 import { cn } from "@/lib/utils";
+import { connectGoogleFit } from "@/lib/integrations/google-fit";
+import { startFitbitAuth, consumeFitbitCallback } from "@/lib/integrations/fitbit";
 
-/** How a provider connects: paste a personal API key, or OAuth (server-side, not yet wired). */
-type ConnectMethod = "api_key" | "oauth_pending";
+/** How a provider connects. */
+type ConnectMethod = "api_key" | "oauth_google" | "oauth_pkce" | "manual";
 
 interface IntegrationDef {
   id: IntegrationProvider;
@@ -60,10 +63,10 @@ const INTEGRATIONS: IntegrationDef[] = [
     description: "Pull in activity, steps, and heart rate from Google.",
     icon: <Activity className="h-5 w-5" />,
     tone: "bg-sky-500/10 text-sky-600 dark:text-sky-400 ring-sky-500/20",
-    method: "oauth_pending",
+    method: "oauth_google",
     docsUrl: "https://developers.google.com/fit",
     helpText:
-      "Google Fit requires an OAuth 2.0 flow with a server-side token exchange. Once a backend function is configured, this will open Google's consent screen.",
+      "Click Connect to open Google's consent screen in a popup. Read-only access to activity, heart-rate, and body metrics is requested. The access token is stored on your private user_integrations row.",
   },
   {
     id: "fitbit",
@@ -71,10 +74,10 @@ const INTEGRATIONS: IntegrationDef[] = [
     description: "Sync sleep, heart rate, and daily activity.",
     icon: <Watch className="h-5 w-5" />,
     tone: "bg-teal-500/10 text-teal-600 dark:text-teal-400 ring-teal-500/20",
-    method: "oauth_pending",
+    method: "oauth_pkce",
     docsUrl: "https://dev.fitbit.com/build/reference/web-api/",
     helpText:
-      "Fitbit uses OAuth 2.0 with PKCE. A server function is needed to exchange the authorization code for tokens — coming soon.",
+      "Click Connect to be redirected to Fitbit for authorization. We use OAuth 2.0 with PKCE so the exchange happens safely in your browser — no shared secrets. The redirect URI to register in your Fitbit app is shown below.",
   },
   {
     id: "apple_health",
@@ -82,9 +85,9 @@ const INTEGRATIONS: IntegrationDef[] = [
     description: "Import workouts and health metrics from iOS.",
     icon: <Heart className="h-5 w-5" />,
     tone: "bg-rose-500/10 text-rose-600 dark:text-rose-400 ring-rose-500/20",
-    method: "oauth_pending",
+    method: "manual",
     helpText:
-      "Apple Health is iOS-only. Connecting requires a companion iOS app (HealthKit) — there is no public web API. We'll keep your slot reserved.",
+      "Apple Health has no public web API — it lives inside iOS via HealthKit. Reserve the slot here, then export from the Health app on iPhone (Profile → Export All Health Data) and import the XML when that feature lands.",
   },
 ];
 
@@ -98,6 +101,10 @@ export function SettingsIntegrationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connectingProvider, setConnectingProvider] = useState<IntegrationProvider | null>(null);
+  const [busyProvider, setBusyProvider] = useState<IntegrationProvider | null>(null);
+  /** Provider awaiting disconnect confirmation. */
+  const [disconnectingProvider, setDisconnectingProvider] = useState<IntegrationProvider | null>(null);
+  const [disconnectBusy, setDisconnectBusy] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -115,6 +122,31 @@ export function SettingsIntegrationsPage() {
     };
   }, [user]);
 
+  // Detect a Fitbit OAuth redirect-back and finalize the connection. The
+  // library short-circuits when there's no callback in the URL, so the effect
+  // is cheap to run on every mount.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await consumeFitbitCallback();
+        if (cancelled || !token) return;
+        setBusyProvider("fitbit");
+        await handleConnect("fitbit", { credentials: token, status: "connected" });
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setBusyProvider(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // handleConnect is intentionally not in deps — it's stable in this component.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
   const byProvider: Partial<Record<IntegrationProvider, UserIntegration>> = {};
   for (const r of rows) byProvider[r.provider] = r;
 
@@ -122,7 +154,11 @@ export function SettingsIntegrationsPage() {
 
   async function handleConnect(
     provider: IntegrationProvider,
-    payload: { credentials: Record<string, unknown>; status: "connected" | "pending"; notes?: string | null }
+    payload: {
+      credentials: Record<string, unknown>;
+      status: "connected" | "pending";
+      notes?: string | null;
+    }
   ) {
     if (!user) return;
     const row: UserIntegration = {
@@ -166,20 +202,49 @@ export function SettingsIntegrationsPage() {
     setConnectingProvider(null);
   }
 
-  async function handleDisconnect(provider: IntegrationProvider) {
-    if (!user) return;
-    if (!confirm(`Disconnect ${PROVIDERS_BY_ID[provider].name}? Stored credentials will be removed.`))
+  // Dispatched when the user clicks Connect on a card. API-key / manual flows
+  // open the dialog; OAuth flows are kicked off directly.
+  async function startConnect(provider: IntegrationProvider) {
+    const def = PROVIDERS_BY_ID[provider];
+    setError(null);
+    if (def.method === "api_key" || def.method === "manual") {
+      setConnectingProvider(provider);
       return;
+    }
+    setBusyProvider(provider);
+    try {
+      if (def.method === "oauth_google") {
+        const token = await connectGoogleFit();
+        await handleConnect(provider, { credentials: token, status: "connected" });
+      } else {
+        // oauth_pkce: navigates away on success; the callback effect finishes the flow.
+        await startFitbitAuth();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      // Only clear busy if we didn't navigate away (PKCE redirect won't reach here).
+      setBusyProvider(null);
+    }
+  }
+
+  async function confirmDisconnect() {
+    const provider = disconnectingProvider;
+    if (!user || !provider) return;
+    setDisconnectBusy(true);
     const prev = rows;
     setRows((rs) => rs.filter((r) => r.provider !== provider));
     const { error } = await supabase
       .from("user_integrations")
       .delete()
       .eq("provider", provider);
+    setDisconnectBusy(false);
     if (error) {
       setError(error.message);
       setRows(prev);
+      return;
     }
+    setDisconnectingProvider(null);
   }
 
   return (
@@ -200,9 +265,9 @@ export function SettingsIntegrationsPage() {
       <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm flex items-start gap-2.5">
         <Info className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
         <p className="text-amber-900 dark:text-amber-200">
-          <strong>Heads up.</strong> Hevy supports a Personal API key — you can connect now. The other
-          providers need a server-side OAuth function; their slots are reserved and will activate once
-          configured.
+          <strong>Heads up.</strong> Hevy connects with a personal API key, Google Fit and Fitbit
+          use a sign-in popup, and Apple Health is iOS-only — reserve its slot here and import an
+          XML export from your iPhone later.
         </p>
       </div>
 
@@ -223,8 +288,9 @@ export function SettingsIntegrationsPage() {
                 key={it.id}
                 def={it}
                 row={row}
-                onConnectClick={() => setConnectingProvider(it.id)}
-                onDisconnect={() => handleDisconnect(it.id)}
+                busy={busyProvider === it.id}
+                onConnectClick={() => startConnect(it.id)}
+                onDisconnect={() => setDisconnectingProvider(it.id)}
               />
             );
           })}
@@ -236,6 +302,21 @@ export function SettingsIntegrationsPage() {
         onClose={() => setConnectingProvider(null)}
         onConnect={handleConnect}
       />
+
+      <ConfirmDialog
+        open={Boolean(disconnectingProvider)}
+        title={
+          disconnectingProvider
+            ? `Disconnect ${PROVIDERS_BY_ID[disconnectingProvider].name}?`
+            : "Disconnect"
+        }
+        description="Stored credentials will be removed from this account. You can reconnect any time."
+        confirmLabel={disconnectBusy ? "Disconnecting…" : "Disconnect"}
+        destructive
+        busy={disconnectBusy}
+        onConfirm={confirmDisconnect}
+        onClose={() => setDisconnectingProvider(null)}
+      />
     </div>
   );
 }
@@ -243,11 +324,13 @@ export function SettingsIntegrationsPage() {
 function IntegrationCard({
   def,
   row,
+  busy,
   onConnectClick,
   onDisconnect,
 }: {
   def: IntegrationDef;
   row: UserIntegration | undefined;
+  busy: boolean;
   onConnectClick: () => void;
   onDisconnect: () => void;
 }) {
@@ -274,22 +357,21 @@ function IntegrationCard({
           </div>
         </div>
 
-        {/* Footer: connection metadata + actions */}
+        {/* Footer: connection metadata + actions. For disconnected cards we
+            show a method hint (e.g. "Sign in with Google") rather than
+            repeating "Not connected" — the badge in the header already
+            communicates the status. */}
         <div className="mt-4 pt-3 border-t border-border/60 flex items-center justify-between gap-2">
           <div className="text-[11px] text-muted-foreground min-w-0 truncate">
-            {row ? (
-              <>
-                {status === "connected" && (
-                  <span className="inline-flex items-center gap-1">
-                    <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                    Connected {formatRelative(row.connected_at)}
-                  </span>
-                )}
-                {status === "pending" && <span>Awaiting OAuth setup</span>}
-                {status === "disconnected" && <span>Disconnected</span>}
-              </>
-            ) : (
-              <span>Not connected</span>
+            {row && status === "connected" && (
+              <span className="inline-flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                Connected {formatRelative(row.connected_at)}
+              </span>
+            )}
+            {row && status === "pending" && <span>Awaiting setup</span>}
+            {(!row || status === "disconnected") && (
+              <span>{methodHint(def)}</span>
             )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -298,17 +380,29 @@ function IntegrationCard({
                 <Unlink className="h-3.5 w-3.5" />
                 Disconnect
               </Button>
+            ) : def.method === "manual" ? (
+              // Apple Health can't be connected from the web — make it
+              // visually distinct so users don't expect an OAuth flow.
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onConnectClick}
+                disabled={busy}
+                className="h-8"
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                Reserve slot
+              </Button>
             ) : (
               <Button
                 variant="default"
                 size="sm"
                 onClick={onConnectClick}
-                disabled={def.method === "oauth_pending"}
-                title={def.method === "oauth_pending" ? "Awaiting backend OAuth setup" : undefined}
+                disabled={busy}
                 className="h-8"
               >
                 <Link2 className="h-3.5 w-3.5" />
-                Connect
+                {busy ? "Connecting…" : "Connect"}
               </Button>
             )}
           </div>
@@ -321,8 +415,23 @@ function IntegrationCard({
 function StatusBadge({ status, method }: { status: string; method: ConnectMethod }) {
   if (status === "connected") return <Badge variant="success">Connected</Badge>;
   if (status === "pending") return <Badge variant="warning">Pending</Badge>;
-  if (method === "oauth_pending") return <Badge variant="warning">Coming soon</Badge>;
+  if (method === "manual") return <Badge variant="secondary">iOS-only</Badge>;
   return <Badge variant="secondary">Not connected</Badge>;
+}
+
+/** Short, method-specific hint shown in disconnected card footers instead of
+ *  repeating "Not connected" (which the status badge already says). Templating
+ *  in `def.name` keeps the OAuth hints in sync if a provider is ever renamed. */
+function methodHint(def: IntegrationDef): string {
+  switch (def.method) {
+    case "api_key":
+      return "Connects with a personal API key";
+    case "oauth_google":
+    case "oauth_pkce":
+      return `Sign in with ${def.name} to connect`;
+    case "manual":
+      return "iOS-only · import XML later";
+  }
 }
 
 function ConnectDialog({
@@ -363,11 +472,11 @@ function ConnectDialog({
         credentials: { api_key: apiKey.trim() },
         status: "connected",
       });
-    } else {
+    } else if (def.method === "manual") {
       await onConnect(provider, {
         credentials: {},
         status: "pending",
-        notes: "OAuth flow not yet configured. Slot reserved.",
+        notes: "Reserved — awaiting iOS Health Data XML import.",
       });
     }
     setSaving(false);
@@ -388,7 +497,7 @@ function ConnectDialog({
           <p className="text-xs text-muted-foreground leading-relaxed">{def.helpText}</p>
         </div>
 
-        {def.method === "api_key" ? (
+        {def.method === "api_key" && (
           <div className="space-y-1.5">
             <Label htmlFor="api-key">Personal API key</Label>
             <Input
@@ -404,10 +513,12 @@ function ConnectDialog({
               Stored on your private row, locked by RLS. Never sent to anyone else.
             </p>
           </div>
-        ) : (
+        )}
+        {def.method === "manual" && (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
-            We'll reserve this slot in your account and mark it <strong>Pending</strong>. The actual
-            OAuth flow will activate once a backend function is wired — no action needed on your side.
+            We'll reserve this slot and mark it <strong>Pending</strong>. To bring data in, export
+            your Health data on iPhone (Health app → profile photo → Export All Health Data) and
+            import the resulting <code>export.xml</code> when that importer ships.
           </div>
         )}
 
@@ -428,7 +539,7 @@ function ConnectDialog({
             Cancel
           </Button>
           <Button type="submit" disabled={saving || (def.method === "api_key" && !apiKey.trim())}>
-            {saving ? "Connecting…" : def.method === "api_key" ? "Connect" : "Reserve slot"}
+            {saving ? "Saving…" : def.method === "api_key" ? "Connect" : "Reserve slot"}
           </Button>
         </div>
       </form>

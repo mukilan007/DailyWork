@@ -3,6 +3,8 @@
 interface ImportMetaEnv {
   readonly VITE_SUPABASE_URL: string;
   readonly VITE_SUPABASE_ANON_KEY: string;
+  readonly VITE_GOOGLE_FIT_CLIENT_ID: string;
+  readonly VITE_FITBIT_CLIENT_ID: string;
 }
 
 interface ImportMeta {
