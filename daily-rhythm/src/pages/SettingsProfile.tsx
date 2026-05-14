@@ -18,6 +18,13 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Dialog } from "@/components/ui/Dialog";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
+import {
+  derivePassword,
+  describePasswordIssues,
+  PASSWORD_HINT,
+  PASSWORD_MIN_LENGTH,
+  validatePasswordStrength,
+} from "@/lib/passwordHash";
 import { cn } from "@/lib/utils";
 
 const DELETE_CONFIRM_PHRASE = "delete my account";
@@ -132,6 +139,11 @@ export function SettingsProfilePage() {
       setPwMsg({ kind: "error", text: "New password must differ from the current one." });
       return;
     }
+    const issues = validatePasswordStrength(newPassword);
+    if (issues.length > 0) {
+      setPwMsg({ kind: "error", text: describePasswordIssues(issues) });
+      return;
+    }
     setPwAction("changing");
     setPwMsg(null);
 
@@ -140,18 +152,27 @@ export function SettingsProfilePage() {
     // the session in place on success, and returns an explicit error on
     // failure (so we can surface a "wrong password" message without exposing
     // detail about whether the email exists).
-    const { error: reauthError } = await supabase.auth.signInWithPassword({
+    const derivedCurrent = await derivePassword(user.email, currentPassword);
+    let reauth = await supabase.auth.signInWithPassword({
       email: user.email,
-      password: currentPassword,
+      password: derivedCurrent,
     });
-    if (reauthError) {
+    // Legacy fallback for accounts created before client-side hashing.
+    if (reauth.error && /invalid login credentials/i.test(reauth.error.message)) {
+      reauth = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: currentPassword,
+      });
+    }
+    if (reauth.error) {
       setPwAction("idle");
       setPwMsg({ kind: "error", text: "Current password is incorrect." });
       return;
     }
 
     // Step 2: now safe to rotate the password.
-    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    const derivedNew = await derivePassword(user.email, newPassword);
+    const { error } = await supabase.auth.updateUser({ password: derivedNew });
     setPwAction("idle");
     if (error) {
       setPwMsg({ kind: "error", text: error.message });
@@ -208,6 +229,11 @@ export function SettingsProfilePage() {
       setPwMsg({ kind: "error", text: "Enter the code from the email." });
       return;
     }
+    const issues = validatePasswordStrength(newPassword);
+    if (issues.length > 0) {
+      setPwMsg({ kind: "error", text: describePasswordIssues(issues) });
+      return;
+    }
     setPwAction("verifying");
     setPwMsg(null);
 
@@ -226,7 +252,8 @@ export function SettingsProfilePage() {
     }
 
     // Step 2: rotate the password.
-    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    const derivedNew = await derivePassword(user.email, newPassword);
+    const { error } = await supabase.auth.updateUser({ password: derivedNew });
     setPwAction("idle");
     if (error) {
       setPwMsg({ kind: "error", text: error.message });
@@ -366,10 +393,10 @@ export function SettingsProfilePage() {
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   autoComplete="new-password"
-                  minLength={6}
+                  minLength={PASSWORD_MIN_LENGTH}
                   required
                 />
-                <p className="text-xs text-muted-foreground">Minimum 6 characters.</p>
+                <p className="text-xs text-muted-foreground">{PASSWORD_HINT}</p>
               </div>
 
               {pwMsg && <FormMessage msg={pwMsg} />}
@@ -425,10 +452,10 @@ export function SettingsProfilePage() {
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   autoComplete="new-password"
-                  minLength={6}
+                  minLength={PASSWORD_MIN_LENGTH}
                   required
                 />
-                <p className="text-xs text-muted-foreground">Minimum 6 characters.</p>
+                <p className="text-xs text-muted-foreground">{PASSWORD_HINT}</p>
               </div>
 
               {pwMsg && <FormMessage msg={pwMsg} />}

@@ -1,36 +1,50 @@
 import { FormEvent, useState } from "react";
-import { Activity, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Activity } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { PasswordInput } from "@/components/ui/PasswordInput";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Toast, ToastKind } from "@/components/ui/Toast";
+import {
+  derivePassword,
+  describePasswordIssues,
+  PASSWORD_HINT,
+  PASSWORD_MIN_LENGTH,
+  validatePasswordStrength,
+} from "@/lib/passwordHash";
+
+type ToastState = { kind: ToastKind; title?: string; message: string } | null;
+
+/** Map a Supabase auth error message to a friendlier title + (optional) actionable hint. */
+function describeAuthError(raw: string): { title: string; message: string } {
+  const m = raw.toLowerCase();
+  if (m.includes("error sending confirmation email") || m.includes("error sending")) {
+    return {
+      title: "Couldn't send confirmation email",
+      message: `${raw} — Supabase's default mail service likely rejected or rate-limited this address. Configure custom SMTP in the Supabase dashboard, or temporarily disable email confirmation while testing.`,
+    };
+  }
+  if (m.includes("invalid login credentials")) {
+    return { title: "Sign-in failed", message: "Email or password is incorrect." };
+  }
+  if (m.includes("email not confirmed")) {
+    return { title: "Email not verified", message: "Open the confirmation link we emailed you, then try again." };
+  }
+  if (m.includes("user already registered")) {
+    return { title: "Account exists", message: "This email is already registered. Try signing in instead." };
+  }
+  if (m.includes("password should be")) {
+    return { title: "Weak password", message: raw };
+  }
+  if (m.includes("rate limit") || m.includes("too many")) {
+    return { title: "Too many attempts", message: `${raw} — wait a minute and try again.` };
+  }
+  return { title: "Something went wrong", message: raw };
+}
 
 type Mode = "signin" | "signup";
-
-function GoogleIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 48 48" aria-hidden focusable="false">
-      <path
-        fill="#FFC107"
-        d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.2-.1-2.4-.4-3.5z"
-      />
-      <path
-        fill="#FF3D00"
-        d="M6.3 14.7l6.6 4.8C14.7 16 19 13 24 13c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.6 8.3 6.3 14.7z"
-      />
-      <path
-        fill="#4CAF50"
-        d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"
-      />
-      <path
-        fill="#1976D2"
-        d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.1 5.6l6.2 5.2C41 35.3 44 30 44 24c0-1.2-.1-2.4-.4-3.5z"
-      />
-    </svg>
-  );
-}
 
 const COPY: Record<Mode, { title: string; subtitle: string; submit: string; toggleText: string; toggleLink: string; autocomplete: string }> = {
   signin: {
@@ -55,62 +69,118 @@ export function AuthPage() {
   const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastState>(null);
   const [loading, setLoading] = useState(false);
-  const [googleLoading, setGoogleLoading] = useState(false);
 
   const c = COPY[mode];
+
+  function showError(rawMessage: string) {
+    const { title, message } = describeAuthError(rawMessage);
+    setToast({ kind: "error", title, message });
+    setEmail("");
+    setPassword("");
+  }
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
-    setError(null);
-    setSuccess(null);
+    setToast(null);
 
-    const { error: err } =
-      mode === "signin"
-        ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
-        : await supabase.auth.signUp({ email: email.trim(), password });
+    // Enforce strong-password policy on signup only. Sign-in must accept
+    // whatever the user has on file so legacy short-password accounts can
+    // still log in (and migrate via the fallback below).
+    if (mode === "signup") {
+      const issues = validatePasswordStrength(password);
+      if (issues.length > 0) {
+        setLoading(false);
+        setToast({
+          kind: "error",
+          title: "Weak password",
+          message: describePasswordIssues(issues),
+        });
+        return;
+      }
+    }
+
+    const cleanEmail = email.trim();
+    const derivedPassword = await derivePassword(cleanEmail, password);
+
+    if (mode === "signin") {
+      // Try the derived (new format) password first.
+      const first = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password: derivedPassword,
+      });
+
+      // Legacy fallback: accounts created before client-side hashing was
+      // introduced have `bcrypt(plaintext)` in the DB. On invalid-credentials
+      // try the raw password once; on success, silently rotate the row to
+      // the derived format so the next sign-in is single-shot.
+      if (first.error && /invalid login credentials/i.test(first.error.message)) {
+        const legacy = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
+        if (!legacy.error) {
+          // Best-effort migration. If rotation fails (e.g. transient network),
+          // the user is still signed in via plaintext and will retry next time.
+          await supabase.auth.updateUser({ password: derivedPassword }).catch(() => {});
+          setLoading(false);
+          return;
+        }
+      }
+
+      setLoading(false);
+      if (first.error) showError(first.error.message);
+      return;
+    }
+
+    const { data, error: err } = await supabase.auth.signUp({
+      email: cleanEmail,
+      password: derivedPassword,
+      options: { emailRedirectTo: `${window.location.origin}/` },
+    });
 
     setLoading(false);
     if (err) {
-      setError(err.message);
+      showError(err.message);
       return;
     }
-    if (mode === "signup") {
-      setSuccess("Check your email to confirm your account, then sign in.");
+    // Supabase returns a user with empty (or missing) `identities` when the email is already registered.
+    if (data.user && !data.user.identities?.length) {
+      showError("User already registered");
+      return;
     }
-  }
-
-  async function onGoogle() {
-    setGoogleLoading(true);
-    setError(null);
-    setSuccess(null);
-
-    const { error: err } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/`,
-        queryParams: { access_type: "offline", prompt: "consent" },
-      },
+    setToast({
+      kind: "success",
+      title: "Check your inbox",
+      message: `We sent a confirmation link to ${cleanEmail}. Open it to verify your account, then sign in.`,
     });
-
-    if (err) {
-      setGoogleLoading(false);
-      setError(err.message);
-    }
-    // On success the browser redirects to Google, so no need to clear loading.
+    setEmail("");
+    setPassword("");
   }
 
   function toggle() {
     setMode((m) => (m === "signin" ? "signup" : "signin"));
-    setError(null);
-    setSuccess(null);
+    setToast(null);
+    // Clear credentials so values from the previous mode don't carry over —
+    // a sign-in password the user didn't intend to register with, or vice versa.
+    setEmail("");
+    setPassword("");
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-primary/10 via-background to-background relative overflow-hidden">
+      {toast && (
+        <Toast
+          kind={toast.kind}
+          title={toast.title}
+          message={toast.message}
+          onDismiss={() => setToast(null)}
+          duration={toast.kind === "error" ? 8000 : 6000}
+        />
+      )}
+
       {/* Decorative blobs */}
       <div className="pointer-events-none absolute -top-24 -left-24 h-72 w-72 rounded-full bg-primary/20 blur-3xl" aria-hidden />
       <div className="pointer-events-none absolute -bottom-24 -right-24 h-72 w-72 rounded-full bg-indigo-500/10 blur-3xl" aria-hidden />
@@ -132,26 +202,6 @@ export function AuthPage() {
             <CardDescription>{c.subtitle}</CardDescription>
           </CardHeader>
           <CardContent>
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full mb-4"
-              onClick={onGoogle}
-              disabled={googleLoading || loading}
-            >
-              <GoogleIcon className="h-4 w-4 mr-2" />
-              {googleLoading ? "Redirecting…" : "Continue with Google"}
-            </Button>
-
-            <div className="relative my-4" aria-hidden>
-              <div className="absolute inset-0 flex items-center">
-                <span className="w-full border-t border-border" />
-              </div>
-              <div className="relative flex justify-center text-[11px] uppercase tracking-wider">
-                <span className="bg-card px-2 text-muted-foreground">or with email</span>
-              </div>
-            </div>
-
             <form onSubmit={onSubmit} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="email">Email</Label>
@@ -170,34 +220,20 @@ export function AuthPage() {
                 <PasswordInput
                   id="password"
                   autoComplete={c.autocomplete}
-                  placeholder={mode === "signup" ? "At least 6 characters" : "••••••••"}
+                  placeholder={mode === "signup" ? `At least ${PASSWORD_MIN_LENGTH} characters` : "••••••••"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  minLength={6}
+                  // Sign-in keeps a permissive minLength so legacy short-password
+                  // accounts can still submit and trigger the migration path.
+                  minLength={mode === "signup" ? PASSWORD_MIN_LENGTH : 1}
                   required
                 />
+                {mode === "signup" && (
+                  <p className="text-[11px] text-muted-foreground">{PASSWORD_HINT}</p>
+                )}
               </div>
 
-              {error && (
-                <div
-                  role="alert"
-                  className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-                >
-                  <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-                  <span>{error}</span>
-                </div>
-              )}
-              {success && (
-                <div
-                  role="status"
-                  className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300"
-                >
-                  <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
-                  <span>{success}</span>
-                </div>
-              )}
-
-              <Button type="submit" className="w-full" disabled={loading || googleLoading}>
+              <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? "Please wait…" : c.submit}
               </Button>
 
