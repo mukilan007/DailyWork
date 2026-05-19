@@ -26,6 +26,7 @@ export function FinanceCategoriesPage() {
   const [editing, setEditing] = useState<FinanceCategory | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<FinanceCategory | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -67,26 +68,60 @@ export function FinanceCategoriesPage() {
 
   function openAdd() {
     setEditing(null);
+    setDialogError(null);
     setDialogOpen(true);
   }
   function openEdit(c: FinanceCategory) {
     setEditing(c);
+    setDialogError(null);
     setDialogOpen(true);
+  }
+  function closeDialog() {
+    setDialogOpen(false);
+    setDialogError(null);
   }
 
   async function handleSave(name: string) {
     if (!user) return;
     setBusy(true);
-    setError(null);
+    setDialogError(null);
+    const trimmed = name.trim();
+    const key = trimmed.toLowerCase();
+    // Dup-check scope:
+    //  - editing: same kind + same parent_id as the row being edited, exclude self
+    //  - creating: same kind + current parent (drillParent ?? top-level)
+    const scopeParentId = editing
+      ? editing.parent_id
+      : drillParent?.id ?? null;
+    const scopeKind = editing ? editing.kind : kind;
+    const dup = categories.find(
+      (c) =>
+        c.id !== editing?.id &&
+        c.kind === scopeKind &&
+        (c.parent_id ?? null) === scopeParentId &&
+        c.name.trim().toLowerCase() === key
+    );
+    if (dup) {
+      const prefix = scopeParentId
+        ? "A subcategory"
+        : `An ${scopeKind} category`;
+      setDialogError(`${prefix} named "${dup.name}" already exists.`);
+      setBusy(false);
+      return;
+    }
     if (editing) {
       const { data, error: err } = await supabase
         .from("finance_categories")
-        .update({ name })
+        .update({ name: trimmed })
         .eq("id", editing.id)
         .select()
         .single();
-      if (err) setError(err.message);
-      else if (data)
+      if (err) {
+        setDialogError(err.message);
+        setBusy(false);
+        return;
+      }
+      if (data)
         setCategories((cur) =>
           cur.map((c) => (c.id === editing.id ? (data as FinanceCategory) : c))
         );
@@ -97,30 +132,73 @@ export function FinanceCategoriesPage() {
         .from("finance_categories")
         .insert({
           user_id: user.id,
-          name,
+          name: trimmed,
           kind,
           parent_id,
           position: sibs.length,
         })
         .select()
         .single();
-      if (err) setError(err.message);
-      else if (data) setCategories((cur) => [...cur, data as FinanceCategory]);
+      if (err) {
+        setDialogError(err.message);
+        setBusy(false);
+        return;
+      }
+      if (data) setCategories((cur) => [...cur, data as FinanceCategory]);
     }
     setBusy(false);
-    setDialogOpen(false);
+    closeDialog();
   }
 
   async function handleDelete() {
     if (!confirmDelete) return;
     setBusy(true);
+    // Collect the target row + every descendant so we can pre-check whether any
+    // transactions still reference this category subtree. Without this, the
+    // ON DELETE SET NULL on finance_transactions.category_id would silently
+    // strip the category off existing transactions.
+    const subtreeIds = [
+      confirmDelete.id,
+      ...categories
+        .filter((c) => c.parent_id === confirmDelete.id)
+        .map((c) => c.id),
+    ];
+    const { count, error: countErr } = await supabase
+      .from("finance_transactions")
+      .select("id", { count: "exact", head: true })
+      .in("category_id", subtreeIds);
+    if (countErr) {
+      setBusy(false);
+      setError(countErr.message);
+      setConfirmDelete(null);
+      return;
+    }
+    if ((count ?? 0) > 0) {
+      setBusy(false);
+      setError(
+        `Can't delete "${confirmDelete.name}" — ${count} transaction${
+          count === 1 ? "" : "s"
+        } still use ${
+          subtreeIds.length > 1 ? "it or one of its subcategories" : "it"
+        }. Reassign or delete those transactions first.`
+      );
+      setConfirmDelete(null);
+      return;
+    }
     const { error: err } = await supabase
       .from("finance_categories")
       .delete()
       .eq("id", confirmDelete.id);
     setBusy(false);
     if (err) {
-      setError(err.message);
+      // The DB-level RESTRICT FK gives a "violates foreign key constraint"
+      // error if a transaction was created between the pre-check above and
+      // this delete. Surface the same friendly message.
+      setError(
+        /violat/i.test(err.message)
+          ? `Can't delete "${confirmDelete.name}" — it's still in use by one or more transactions.`
+          : err.message
+      );
       setConfirmDelete(null);
       return;
     }
@@ -273,11 +351,12 @@ export function FinanceCategoriesPage() {
 
       <CategoryDialog
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        onClose={closeDialog}
         initial={editing}
         label={drillParent ? "subcategory" : "category"}
         onSave={handleSave}
         busy={busy}
+        error={dialogError}
       />
       <ConfirmDialog
         open={!!confirmDelete}
@@ -310,6 +389,7 @@ interface CategoryDialogProps {
   label: string;
   onSave: (name: string) => void | Promise<void>;
   busy: boolean;
+  error: string | null;
 }
 
 function CategoryDialog({
@@ -319,6 +399,7 @@ function CategoryDialog({
   label,
   onSave,
   busy,
+  error,
 }: CategoryDialogProps) {
   const [name, setName] = useState("");
   useEffect(() => {
@@ -351,6 +432,11 @@ function CategoryDialog({
             autoFocus
           />
         </div>
+        {error && (
+          <p className="text-sm text-rose-500" role="alert">
+            {error}
+          </p>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Cancel

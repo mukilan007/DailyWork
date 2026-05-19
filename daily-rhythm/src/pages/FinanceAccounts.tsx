@@ -26,6 +26,7 @@ export function FinanceAccountsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<FinanceAccount | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -50,26 +51,46 @@ export function FinanceAccountsPage() {
 
   function openAdd() {
     setEditing(null);
+    setDialogError(null);
     setDialogOpen(true);
   }
   function openEdit(a: FinanceAccount) {
     setEditing(a);
+    setDialogError(null);
     setDialogOpen(true);
+  }
+  function closeDialog() {
+    setDialogOpen(false);
+    setDialogError(null);
   }
 
   async function handleSave(name: string, type: AccountType) {
     if (!user) return;
     setBusy(true);
-    setError(null);
+    setDialogError(null);
+    const trimmed = name.trim();
+    const key = trimmed.toLowerCase();
+    const dup = accounts.find(
+      (a) => a.id !== editing?.id && a.name.trim().toLowerCase() === key
+    );
+    if (dup) {
+      setDialogError(`An account named "${dup.name}" already exists.`);
+      setBusy(false);
+      return;
+    }
     if (editing) {
       const { data, error: err } = await supabase
         .from("finance_accounts")
-        .update({ name, account_type: type })
+        .update({ name: trimmed, account_type: type })
         .eq("id", editing.id)
         .select()
         .single();
-      if (err) setError(err.message);
-      else if (data) {
+      if (err) {
+        setDialogError(err.message);
+        setBusy(false);
+        return;
+      }
+      if (data) {
         setAccounts((cur) =>
           cur.map((a) => (a.id === editing.id ? (data as FinanceAccount) : a))
         );
@@ -78,14 +99,18 @@ export function FinanceAccountsPage() {
       const position = accounts.filter((a) => a.account_type === type).length;
       const { data, error: err } = await supabase
         .from("finance_accounts")
-        .insert({ user_id: user.id, name, account_type: type, position })
+        .insert({ user_id: user.id, name: trimmed, account_type: type, position })
         .select()
         .single();
-      if (err) setError(err.message);
-      else if (data) setAccounts((cur) => [...cur, data as FinanceAccount]);
+      if (err) {
+        setDialogError(err.message);
+        setBusy(false);
+        return;
+      }
+      if (data) setAccounts((cur) => [...cur, data as FinanceAccount]);
     }
     setBusy(false);
-    setDialogOpen(false);
+    closeDialog();
   }
 
   async function handleDelete() {
@@ -192,10 +217,11 @@ export function FinanceAccountsPage() {
 
       <AccountDialog
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        onClose={closeDialog}
         initial={editing}
         onSave={handleSave}
         busy={busy}
+        error={dialogError}
       />
       <ConfirmDialog
         open={!!confirmDelete}
@@ -221,9 +247,10 @@ interface AccountDialogProps {
   initial: FinanceAccount | null;
   onSave: (name: string, type: AccountType) => void | Promise<void>;
   busy: boolean;
+  error: string | null;
 }
 
-function AccountDialog({ open, onClose, initial, onSave, busy }: AccountDialogProps) {
+function AccountDialog({ open, onClose, initial, onSave, busy, error }: AccountDialogProps) {
   const [name, setName] = useState("");
   const [type, setType] = useState<AccountType>("cash");
 
@@ -272,6 +299,11 @@ function AccountDialog({ open, onClose, initial, onSave, busy }: AccountDialogPr
             ))}
           </Select>
         </div>
+        {error && (
+          <p className="text-sm text-rose-500" role="alert">
+            {error}
+          </p>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Cancel

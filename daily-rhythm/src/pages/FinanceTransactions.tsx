@@ -266,11 +266,15 @@ export function FinanceTransactionsPage() {
     account_type: AccountType;
   }): Promise<FinanceAccount> {
     if (!user) throw new Error("Not signed in.");
+    const trimmed = input.name.trim();
+    const key = trimmed.toLowerCase();
+    const dup = accounts.find((a) => a.name.trim().toLowerCase() === key);
+    if (dup) throw new Error(`An account named "${dup.name}" already exists.`);
     const { data, error: err } = await supabase
       .from("finance_accounts")
       .insert({
         user_id: user.id,
-        name: input.name,
+        name: trimmed,
         account_type: input.account_type,
         position: accounts.length,
       })
@@ -289,17 +293,24 @@ export function FinanceTransactionsPage() {
     parent_id: string | null;
   }): Promise<FinanceCategory> {
     if (!user) throw new Error("Not signed in.");
+    const trimmed = input.name.trim();
+    const key = trimmed.toLowerCase();
     // Compute a sensible position — append to the end of the relevant sibling
     // set so the new row shows up last in any ordered list.
     const siblings = categories.filter(
       (c) =>
         c.kind === input.kind && (c.parent_id ?? null) === (input.parent_id ?? null)
     );
+    const dup = siblings.find((c) => c.name.trim().toLowerCase() === key);
+    if (dup) {
+      const scope = input.parent_id ? "subcategory" : `${input.kind} category`;
+      throw new Error(`A ${scope} named "${dup.name}" already exists.`);
+    }
     const { data, error: err } = await supabase
       .from("finance_categories")
       .insert({
         user_id: user.id,
-        name: input.name,
+        name: trimmed,
         kind: input.kind,
         parent_id: input.parent_id,
         position: siblings.length,

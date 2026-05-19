@@ -53,11 +53,7 @@ export function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         <Menu className="h-5 w-5" />
       </button>
 
-      <h2 className="text-sm font-medium text-muted-foreground truncate">
-        <span className="hidden sm:inline text-foreground">DailyWork</span>
-        <span className="hidden sm:inline mx-2 opacity-50">/</span>
-        <span className="text-foreground">{title}</span>
-      </h2>
+      <h2 className="text-sm font-medium text-foreground truncate">{title}</h2>
 
       <div className="ml-auto flex items-center gap-2">
         <button
