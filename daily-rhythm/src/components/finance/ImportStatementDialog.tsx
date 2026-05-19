@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { FileUp, Loader2, AlertCircle, FileCheck2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
@@ -104,7 +104,6 @@ export function ImportStatementDialog({
   const [progressMsg, setProgressMsg] = useState<string>("");
   const [rows, setRows] = useState<ReviewRow[]>([]);
   const [importing, setImporting] = useState(false);
-  const fileRef = useRef<HTMLInputElement | null>(null);
 
   // Reset whenever the dialog re-opens.
   useEffect(() => {
@@ -123,11 +122,12 @@ export function ImportStatementDialog({
     setProgressMsg("");
   }, [open, accounts]);
 
-  /** True when the pick stage has enough info to accept a file upload. */
+  /** True when the pick stage has enough info to accept a file upload.
+   *  For "new account" mode we don't require a name up-front because the
+   *  parser auto-detects one from the PDF header — the user can confirm or
+   *  edit it later. */
   const pickReady =
-    accountMode === "existing"
-      ? !!accountId
-      : newAccountName.trim().length > 0;
+    accountMode === "existing" ? !!accountId : true;
 
   const selectedCount = useMemo(() => rows.filter((r) => r.selected).length, [rows]);
   const selectedTotal = useMemo(
@@ -150,12 +150,8 @@ export function ImportStatementDialog({
     if (!file) return;
     // Allow re-picking the same file later.
     e.target.value = "";
-    if (!pickReady) {
-      setError(
-        accountMode === "existing"
-          ? "Pick an account first."
-          : "Enter a name for the new account first."
-      );
+    if (accountMode === "existing" && !accountId) {
+      setError("Pick an account first.");
       return;
     }
     setFileName(file.name);
@@ -424,22 +420,19 @@ export function ImportStatementDialog({
             </div>
           )}
 
-          <div
+          {/* Use a native <label htmlFor> so the browser triggers the file
+              input directly — no JS-dispatched click, which avoids both the
+              recursive-bubble issue and the "dialog becomes unresponsive
+              after cancel" issue we saw with fileRef.current?.click(). */}
+          <label
+            htmlFor="import-pdf-file"
+            aria-disabled={!pickReady}
             className={cn(
-              "rounded-lg border-2 border-dashed p-8 text-center transition-colors",
+              "block rounded-lg border-2 border-dashed p-8 text-center transition-colors",
               pickReady
                 ? "border-input hover:border-primary cursor-pointer"
-                : "border-input opacity-60"
+                : "border-input opacity-60 cursor-not-allowed pointer-events-none"
             )}
-            onClick={() => pickReady && fileRef.current?.click()}
-            role="button"
-            tabIndex={pickReady ? 0 : -1}
-            onKeyDown={(e) => {
-              if ((e.key === "Enter" || e.key === " ") && pickReady) {
-                e.preventDefault();
-                fileRef.current?.click();
-              }
-            }}
           >
             <FileUp className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
             <p className="text-sm font-medium">
@@ -448,15 +441,15 @@ export function ImportStatementDialog({
             <p className="text-xs text-muted-foreground mt-1">
               Works best with text-based PDFs from HDFC, ICICI, SBI, Axis, Kotak, etc.
             </p>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="application/pdf"
-              className="hidden"
-              onChange={handleFile}
-              disabled={!pickReady}
-            />
-          </div>
+          </label>
+          <input
+            id="import-pdf-file"
+            type="file"
+            accept="application/pdf"
+            className="sr-only"
+            onChange={handleFile}
+            disabled={!pickReady}
+          />
 
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="ghost" onClick={onClose}>
@@ -577,9 +570,7 @@ export function ImportStatementDialog({
                         className="h-8 text-xs"
                       >
                         <option value="">— Uncategorised —</option>
-                        {parentCats
-                          .filter((c) => c.kind === r.kind)
-                          .map((p) => {
+                        {parentCats.map((p) => {
                             const kids = childrenByParent.get(p.id) ?? [];
                             return (
                               <optgroup key={p.id} label={p.name}>

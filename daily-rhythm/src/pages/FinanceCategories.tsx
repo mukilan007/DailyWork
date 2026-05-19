@@ -11,12 +11,11 @@ import { SkeletonList } from "@/components/ui/Skeleton";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
-import type { CategoryKind, FinanceCategory } from "@/types";
+import type { FinanceCategory } from "@/types";
 import { cn } from "@/lib/utils";
 
 export function FinanceCategoriesPage() {
   const { user } = useAuth();
-  const [kind, setKind] = useState<CategoryKind>("expense");
   const [categories, setCategories] = useState<FinanceCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,14 +48,13 @@ export function FinanceCategoriesPage() {
     };
   }, [user]);
 
-  const ofKind = useMemo(
-    () => categories.filter((c) => c.kind === kind),
-    [categories, kind]
+  const parents = useMemo(
+    () => categories.filter((c) => !c.parent_id),
+    [categories]
   );
-  const parents = useMemo(() => ofKind.filter((c) => !c.parent_id), [ofKind]);
   const childCount = useMemo(() => {
     const m = new Map<string, FinanceCategory[]>();
-    for (const c of ofKind) {
+    for (const c of categories) {
       if (c.parent_id) {
         const arr = m.get(c.parent_id) ?? [];
         arr.push(c);
@@ -64,7 +62,7 @@ export function FinanceCategoriesPage() {
       }
     }
     return m;
-  }, [ofKind]);
+  }, [categories]);
 
   function openAdd() {
     setEditing(null);
@@ -87,24 +85,20 @@ export function FinanceCategoriesPage() {
     setDialogError(null);
     const trimmed = name.trim();
     const key = trimmed.toLowerCase();
-    // Dup-check scope:
-    //  - editing: same kind + same parent_id as the row being edited, exclude self
-    //  - creating: same kind + current parent (drillParent ?? top-level)
+    // Dup-check scope: any sibling with the same name under the same parent
+    // (kind is intentionally ignored — categories are shared across income
+    // and expense transactions).
     const scopeParentId = editing
       ? editing.parent_id
       : drillParent?.id ?? null;
-    const scopeKind = editing ? editing.kind : kind;
     const dup = categories.find(
       (c) =>
         c.id !== editing?.id &&
-        c.kind === scopeKind &&
         (c.parent_id ?? null) === scopeParentId &&
         c.name.trim().toLowerCase() === key
     );
     if (dup) {
-      const prefix = scopeParentId
-        ? "A subcategory"
-        : `An ${scopeKind} category`;
+      const prefix = scopeParentId ? "A subcategory" : "A category";
       setDialogError(`${prefix} named "${dup.name}" already exists.`);
       setBusy(false);
       return;
@@ -127,13 +121,15 @@ export function FinanceCategoriesPage() {
         );
     } else {
       const parent_id = drillParent?.id ?? null;
-      const sibs = ofKind.filter((c) => c.parent_id === parent_id);
+      const sibs = categories.filter((c) => c.parent_id === parent_id);
+      // The DB CHECK still requires `kind in ('income','expense')`. We store
+      // "expense" as a sentinel — nothing in the UI filters on it anymore.
       const { data, error: err } = await supabase
         .from("finance_categories")
         .insert({
           user_id: user.id,
           name: trimmed,
-          kind,
+          kind: "expense",
           parent_id,
           position: sibs.length,
         })
@@ -153,64 +149,32 @@ export function FinanceCategoriesPage() {
   async function handleDelete() {
     if (!confirmDelete) return;
     setBusy(true);
-    // Collect the target row + every descendant so we can pre-check whether any
-    // transactions still reference this category subtree. Without this, the
-    // ON DELETE SET NULL on finance_transactions.category_id would silently
-    // strip the category off existing transactions.
+    // Soft-delete: archive the category (and its descendants) rather than
+    // physically removing the row. The row stays in the DB so any transaction
+    // already pointing at it can still resolve its name for display, while
+    // pickers (which filter by `archived_at is null`) treat it as gone.
     const subtreeIds = [
       confirmDelete.id,
       ...categories
         .filter((c) => c.parent_id === confirmDelete.id)
         .map((c) => c.id),
     ];
-    const { count, error: countErr } = await supabase
-      .from("finance_transactions")
-      .select("id", { count: "exact", head: true })
-      .in("category_id", subtreeIds);
-    if (countErr) {
-      setBusy(false);
-      setError(countErr.message);
-      setConfirmDelete(null);
-      return;
-    }
-    if ((count ?? 0) > 0) {
-      setBusy(false);
-      setError(
-        `Can't delete "${confirmDelete.name}" — ${count} transaction${
-          count === 1 ? "" : "s"
-        } still use ${
-          subtreeIds.length > 1 ? "it or one of its subcategories" : "it"
-        }. Reassign or delete those transactions first.`
-      );
-      setConfirmDelete(null);
-      return;
-    }
     const { error: err } = await supabase
       .from("finance_categories")
-      .delete()
-      .eq("id", confirmDelete.id);
+      .update({ archived_at: new Date().toISOString() })
+      .in("id", subtreeIds);
     setBusy(false);
     if (err) {
-      // The DB-level RESTRICT FK gives a "violates foreign key constraint"
-      // error if a transaction was created between the pre-check above and
-      // this delete. Surface the same friendly message.
-      setError(
-        /violat/i.test(err.message)
-          ? `Can't delete "${confirmDelete.name}" — it's still in use by one or more transactions.`
-          : err.message
-      );
+      setError(err.message);
       setConfirmDelete(null);
       return;
     }
-    // Cascade in DB removes children too — reflect that in state.
-    setCategories((cur) =>
-      cur.filter((c) => c.id !== confirmDelete.id && c.parent_id !== confirmDelete.id)
-    );
+    setCategories((cur) => cur.filter((c) => !subtreeIds.includes(c.id)));
     setConfirmDelete(null);
   }
 
   const showing = drillParent
-    ? ofKind.filter((c) => c.parent_id === drillParent.id)
+    ? categories.filter((c) => c.parent_id === drillParent.id)
     : parents;
 
   return (
@@ -230,27 +194,6 @@ export function FinanceCategoriesPage() {
           </Button>
         }
       />
-
-      {/* Income / Expense toggle — only at top level */}
-      {!drillParent && (
-        <div className="inline-flex rounded-md border bg-card p-0.5 text-sm">
-          {(["income", "expense"] as CategoryKind[]).map((k) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setKind(k)}
-              className={cn(
-                "rounded-sm px-4 py-1.5 capitalize transition-colors",
-                kind === k
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {k}
-            </button>
-          ))}
-        </div>
-      )}
 
       {drillParent && (
         <button
@@ -277,7 +220,7 @@ export function FinanceCategoriesPage() {
           description={
             drillParent
               ? `Add subcategories under ${drillParent.name} to break down spending.`
-              : `Add your first ${kind} category to get started.`
+              : `Add your first category to get started.`
           }
           action={
             <Button onClick={openAdd}>
@@ -369,7 +312,7 @@ export function FinanceCategoriesPage() {
                       childCount.get(confirmDelete.id)!.length === 1 ? "y" : "ies"
                     }`
                   : ""
-              } will be removed. Transactions stay but lose this category.`
+              } will be removed from pickers. Existing transactions keep their category label for reference.`
             : ""
         }
         destructive

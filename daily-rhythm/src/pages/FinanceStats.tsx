@@ -112,10 +112,11 @@ export function FinanceStatsPage() {
             .select("*")
             .gte("occurred_on", fromDate)
             .lte("occurred_on", toDate),
+          // Include archived: transactions in the period may still reference
+          // soft-deleted categories that we still want to label correctly.
           supabase
             .from("finance_categories")
             .select("*")
-            .is("archived_at", null)
             .order("position"),
           budgetMonthFirst
             ? supabase
@@ -374,7 +375,7 @@ export function FinanceStatsPage() {
             >
               <option value="">Overall (all categories)</option>
               {categories
-                .filter((c) => c.kind === "expense" && !c.parent_id)
+                .filter((c) => !c.parent_id && !c.archived_at)
                 .map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}

@@ -27,22 +27,25 @@ export interface CategorySuggestion {
 /**
  * Try to find a category that matches the parsed description.
  * Matching order:
- *  1. Direct substring match on existing category names of the right `kind`.
- *     If we find a *child* match we also return its `parent_id` so the UI
- *     can show the full path.
+ *  1. Direct substring match on existing category names. If we find a *child*
+ *     match we also return its `parent_id` so the UI can show the full path.
  *  2. Hard-coded keyword hints → look for any category whose name overlaps.
+ *
+ * Categories are no longer scoped by income/expense kind, so the `kind`
+ * parameter is accepted for backward compatibility but not used here.
  */
 export function suggestCategory(
   description: string,
   categories: FinanceCategory[],
-  kind: "income" | "expense"
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _kind: "income" | "expense"
 ): CategorySuggestion | null {
   const desc = description.toLowerCase();
-  const sameKind = categories.filter((c) => c.kind === kind);
+  const active = categories.filter((c) => !c.archived_at);
 
   // Children win over parents — they're more specific.
-  const children = sameKind.filter((c) => c.parent_id);
-  const parents = sameKind.filter((c) => !c.parent_id);
+  const children = active.filter((c) => c.parent_id);
+  const parents = active.filter((c) => !c.parent_id);
 
   for (const c of children) {
     if (c.name && desc.includes(c.name.toLowerCase())) {

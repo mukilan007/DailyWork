@@ -70,6 +70,9 @@ type NewAcctTarget = "account" | "from" | "to";
 
 const FREQUENCIES: Frequency[] = ["daily", "weekly", "monthly", "yearly"];
 
+/** Max length for the free-text Note on a transaction. */
+const NOTE_MAX = 50;
+
 export function TransactionDialog({
   open,
   onClose,
@@ -151,7 +154,11 @@ export function TransactionDialog({
       setIntervalN("1");
       setEndOn("");
     }
-  }, [open, initial, accounts, categories]);
+    // Intentionally depend only on `open` and `initial` — re-running this
+    // when `accounts`/`categories` mutate would clobber the user's in-progress
+    // draft every time they create a new account / category inline.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initial]);
 
   // When `kind` flips, reset incompatible category state.
   useEffect(() => {
@@ -168,18 +175,21 @@ export function TransactionDialog({
       ? "text-rose-500"
       : "text-foreground";
 
+  // Categories are shared across income and expense — we no longer filter by
+  // `c.kind` here. The dialog still hides the category fields entirely for
+  // transfers (see the `kind === "transfer"` branch in the JSX).
   const catParents = useMemo(
     () =>
       categories
-        .filter((c) => !c.parent_id && c.kind === (kind === "transfer" ? "expense" : kind))
+        .filter((c) => !c.parent_id && !c.archived_at)
         .sort((a, b) => a.position - b.position),
-    [categories, kind]
+    [categories]
   );
   const catChildren = useMemo(
     () =>
       parentCatId
         ? categories
-            .filter((c) => c.parent_id === parentCatId)
+            .filter((c) => c.parent_id === parentCatId && !c.archived_at)
             .sort((a, b) => a.position - b.position)
         : [],
     [categories, parentCatId]
@@ -226,7 +236,9 @@ export function TransactionDialog({
     try {
       const cat = await createCategory({
         name,
-        kind: kind === "transfer" ? "expense" : kind,
+        // Categories are shared across income/expense — the DB CHECK still
+        // requires a value, so we send "expense" as a sentinel.
+        kind: "expense",
         parent_id: level === "sub" ? parentCatId : null,
       });
       if (level === "parent") {
@@ -275,6 +287,10 @@ export function TransactionDialog({
         setValidationError("From and To must differ.");
         return;
       }
+    }
+    if (note.trim().length > NOTE_MAX) {
+      setValidationError(`Note must be ${NOTE_MAX} characters or fewer.`);
+      return;
     }
     const feesPaise = fees ? rupeesToPaise(fees) ?? 0 : 0;
     const draft: TxDraft = {
@@ -593,13 +609,28 @@ export function TransactionDialog({
           </div>
 
           <Label htmlFor="tx-note">Note</Label>
-          <Textarea
-            id="tx-note"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            rows={2}
-            placeholder="Optional"
-          />
+          <div className="space-y-1">
+            <Textarea
+              id="tx-note"
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, NOTE_MAX))}
+              rows={2}
+              maxLength={NOTE_MAX}
+              placeholder="Optional"
+              aria-describedby="tx-note-count"
+            />
+            <div
+              id="tx-note-count"
+              className={cn(
+                "text-xs text-right",
+                note.length >= NOTE_MAX
+                  ? "text-rose-500"
+                  : "text-muted-foreground"
+              )}
+            >
+              {note.length}/{NOTE_MAX}
+            </div>
+          </div>
         </div>
 
         {/* Recurrence toggle */}
