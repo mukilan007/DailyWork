@@ -11,7 +11,7 @@ import { SkeletonList } from "@/components/ui/Skeleton";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
-import type { FinanceCategory } from "@/types";
+import type { CategoryKind, FinanceCategory } from "@/types";
 import { cn } from "@/lib/utils";
 
 export function FinanceCategoriesPage() {
@@ -19,6 +19,8 @@ export function FinanceCategoriesPage() {
   const [categories, setCategories] = useState<FinanceCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Active tab — categories are separated by kind. */
+  const [kindFilter, setKindFilter] = useState<CategoryKind>("expense");
   /** When set, we're drilled into a parent and showing its children. */
   const [drillParent, setDrillParent] = useState<FinanceCategory | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -49,8 +51,8 @@ export function FinanceCategoriesPage() {
   }, [user]);
 
   const parents = useMemo(
-    () => categories.filter((c) => !c.parent_id),
-    [categories]
+    () => categories.filter((c) => !c.parent_id && c.kind === kindFilter),
+    [categories, kindFilter]
   );
   const childCount = useMemo(() => {
     const m = new Map<string, FinanceCategory[]>();
@@ -85,16 +87,19 @@ export function FinanceCategoriesPage() {
     setDialogError(null);
     const trimmed = name.trim();
     const key = trimmed.toLowerCase();
-    // Dup-check scope: any sibling with the same name under the same parent
-    // (kind is intentionally ignored — categories are shared across income
-    // and expense transactions).
+    // Dup-check scope: same kind, same parent (so "Food" can exist under
+    // both Income and Expense, and under each top-level parent).
     const scopeParentId = editing
       ? editing.parent_id
       : drillParent?.id ?? null;
+    const scopeKind: CategoryKind = editing
+      ? editing.kind
+      : drillParent?.kind ?? kindFilter;
     const dup = categories.find(
       (c) =>
         c.id !== editing?.id &&
         (c.parent_id ?? null) === scopeParentId &&
+        c.kind === scopeKind &&
         c.name.trim().toLowerCase() === key
     );
     if (dup) {
@@ -121,15 +126,18 @@ export function FinanceCategoriesPage() {
         );
     } else {
       const parent_id = drillParent?.id ?? null;
-      const sibs = categories.filter((c) => c.parent_id === parent_id);
-      // The DB CHECK still requires `kind in ('income','expense')`. We store
-      // "expense" as a sentinel — nothing in the UI filters on it anymore.
+      // Subcategories inherit their parent's kind; new top-level categories
+      // pick up the active tab.
+      const newKind: CategoryKind = drillParent?.kind ?? kindFilter;
+      const sibs = categories.filter(
+        (c) => c.parent_id === parent_id && c.kind === newKind
+      );
       const { data, error: err } = await supabase
         .from("finance_categories")
         .insert({
           user_id: user.id,
           name: trimmed,
-          kind: "expense",
+          kind: newKind,
           parent_id,
           position: sibs.length,
         })
@@ -184,7 +192,7 @@ export function FinanceCategoriesPage() {
         description={
           drillParent
             ? `Subcategories of ${drillParent.name}`
-            : "Group your transactions. Tap a category to manage its subcategories."
+            : `${kindFilter === "income" ? "Income" : "Expense"} categories. Tap a category to manage its subcategories.`
         }
         icon={<Tag className="h-5 w-5" />}
         actions={
@@ -194,6 +202,28 @@ export function FinanceCategoriesPage() {
           </Button>
         }
       />
+
+      {!drillParent && (
+        <div className="grid grid-cols-2 gap-2 max-w-xs">
+          {(["expense", "income"] as CategoryKind[]).map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setKindFilter(k)}
+              className={cn(
+                "rounded-md border px-3 py-2 text-sm font-medium capitalize transition-colors",
+                kindFilter === k
+                  ? k === "income"
+                    ? "border-sky-500 text-sky-500"
+                    : "border-rose-500 text-rose-500"
+                  : "border-input text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {k}
+            </button>
+          ))}
+        </div>
+      )}
 
       {drillParent && (
         <button

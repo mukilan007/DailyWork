@@ -728,8 +728,7 @@ export function FinanceTransactionsPage() {
         }}
         createAccount={createAccount}
         onImported={(inserted) => {
-          // Only prepend rows that fall in the current month view; others will
-          // surface when the user navigates to that month.
+          if (inserted.length === 0) return;
           const monthStartStr = ymd(startOfMonth(year, month));
           const monthEndStr = ymd(endOfMonth(year, month));
           const inMonth = inserted.filter(
@@ -737,11 +736,31 @@ export function FinanceTransactionsPage() {
               t.occurred_on >= monthStartStr && t.occurred_on <= monthEndStr
           );
           if (inMonth.length > 0) {
+            // Prepend rows that fall in the current month view.
             setTransactions((cur) =>
               [...inMonth, ...cur].sort((a, b) =>
                 b.occurred_on.localeCompare(a.occurred_on)
               )
             );
+            return;
+          }
+          // None of the imported rows fall in the current month — jump the
+          // view to the earliest imported row's month so the user actually
+          // sees what landed (otherwise the dialog closes with no visible
+          // change and it looks like the import silently failed).
+          const earliest = inserted
+            .map((t) => t.occurred_on)
+            .sort()[0];
+          const [yStr, mStr] = earliest.split("-");
+          const newYear = Number(yStr);
+          const newMonth = Number(mStr) - 1;
+          if (
+            Number.isFinite(newYear) &&
+            Number.isFinite(newMonth) &&
+            (newYear !== year || newMonth !== month)
+          ) {
+            setYear(newYear);
+            setMonth(newMonth);
           }
         }}
       />

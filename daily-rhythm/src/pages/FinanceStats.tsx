@@ -375,7 +375,10 @@ export function FinanceStatsPage() {
             >
               <option value="">Overall (all categories)</option>
               {categories
-                .filter((c) => !c.parent_id && !c.archived_at)
+                .filter(
+                  (c) =>
+                    !c.parent_id && !c.archived_at && c.kind === "expense"
+                )
                 .map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}

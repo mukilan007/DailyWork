@@ -31,17 +31,18 @@ export interface CategorySuggestion {
  *     match we also return its `parent_id` so the UI can show the full path.
  *  2. Hard-coded keyword hints → look for any category whose name overlaps.
  *
- * Categories are no longer scoped by income/expense kind, so the `kind`
- * parameter is accepted for backward compatibility but not used here.
+ * Only categories of the given `kind` are considered, since income and
+ * expense categories live in separate lists.
  */
 export function suggestCategory(
   description: string,
   categories: FinanceCategory[],
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _kind: "income" | "expense"
+  kind: "income" | "expense"
 ): CategorySuggestion | null {
   const desc = description.toLowerCase();
-  const active = categories.filter((c) => !c.archived_at);
+  const active = categories.filter(
+    (c) => !c.archived_at && c.kind === kind
+  );
 
   // Children win over parents — they're more specific.
   const children = active.filter((c) => c.parent_id);

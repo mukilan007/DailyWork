@@ -160,7 +160,10 @@ export function TransactionDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initial]);
 
-  // When `kind` flips, reset incompatible category state.
+  // When `kind` flips, reset incompatible category state. Income and
+  // Expense have separate category lists, but the hydrate effect above
+  // sets `kind` + `parentCatId` together when editing, so we can't blindly
+  // clear here. Only clear when the selection no longer matches the kind.
   useEffect(() => {
     if (kind === "transfer") {
       setParentCatId("");
@@ -175,15 +178,19 @@ export function TransactionDialog({
       ? "text-rose-500"
       : "text-foreground";
 
-  // Categories are shared across income and expense — we no longer filter by
-  // `c.kind` here. The dialog still hides the category fields entirely for
-  // transfers (see the `kind === "transfer"` branch in the JSX).
+  // Categories are scoped by kind (income / expense). The category fields
+  // are hidden entirely for transfers (see the `kind === "transfer"` branch
+  // in the JSX), so we can safely narrow here when kind isn't "transfer".
   const catParents = useMemo(
     () =>
-      categories
-        .filter((c) => !c.parent_id && !c.archived_at)
-        .sort((a, b) => a.position - b.position),
-    [categories]
+      kind === "transfer"
+        ? []
+        : categories
+            .filter(
+              (c) => !c.parent_id && !c.archived_at && c.kind === kind
+            )
+            .sort((a, b) => a.position - b.position),
+    [categories, kind]
   );
   const catChildren = useMemo(
     () =>
@@ -234,11 +241,18 @@ export function TransactionDialog({
     setCreating(true);
     setCreateError(null);
     try {
+      // Subcategory inherits its parent's kind; new top-level categories
+      // use the dialog's current kind (transfer can't reach here — the
+      // category fields are hidden in that branch).
+      const parentCat =
+        level === "sub"
+          ? categories.find((c) => c.id === parentCatId)
+          : undefined;
+      const catKind: CategoryKind =
+        parentCat?.kind ?? (kind === "income" ? "income" : "expense");
       const cat = await createCategory({
         name,
-        // Categories are shared across income/expense — the DB CHECK still
-        // requires a value, so we send "expense" as a sentinel.
-        kind: "expense",
+        kind: catKind,
         parent_id: level === "sub" ? parentCatId : null,
       });
       if (level === "parent") {
@@ -331,7 +345,14 @@ export function TransactionDialog({
             <button
               key={k}
               type="button"
-              onClick={() => setKind(k)}
+              onClick={() => {
+                if (k === kind) return;
+                setKind(k);
+                // Income and Expense have separate category lists, so a
+                // previously selected one is no longer valid.
+                setParentCatId("");
+                setSubCatId("");
+              }}
               className={cn(
                 "rounded-md border px-3 py-2 text-sm font-medium capitalize transition-colors",
                 kind === k
