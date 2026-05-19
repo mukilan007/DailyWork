@@ -89,6 +89,130 @@ export function detectAccountInfo(rawText: string): DetectedAccountInfo {
 }
 
 // ---------------------------------------------------------------------------
+// File → plain text (dispatcher for PDF / CSV / TXT)
+// ---------------------------------------------------------------------------
+
+/** Browser MIME / extension list of formats the importer accepts. Kept here
+ *  so the dialog's `accept=` attribute and the actual dispatcher stay in sync.
+ *  Images go through Tesseract.js OCR — slower and less accurate than PDF/CSV
+ *  but useful for one-off screenshots. */
+export const ACCEPTED_STATEMENT_FORMATS =
+  ".pdf,.csv,.txt,.png,.jpg,.jpeg,.webp,.bmp," +
+  "application/pdf,text/csv,text/plain," +
+  "image/png,image/jpeg,image/webp,image/bmp";
+
+/** Coarse progress callback passed all the way down to the OCR engine so the
+ *  dialog can show "OCR'ing image… 42%" instead of staring at a spinner. */
+export type StatementExtractProgress = (info: {
+  stage: "ocr";
+  /** 0..1 */
+  progress: number;
+}) => void;
+
+export type StatementFormat = "pdf" | "csv" | "txt" | "image" | "unknown";
+
+/** Single source of truth for "what kind of statement is this File?". Used by
+ *  the dispatcher below and by the import dialog (so it can pick the right
+ *  progress message / error copy without re-implementing the same checks). */
+export function detectStatementFormat(file: File): StatementFormat {
+  const name = file.name.toLowerCase();
+  const type = (file.type || "").toLowerCase();
+  if (type === "application/pdf" || name.endsWith(".pdf")) return "pdf";
+  if (name.endsWith(".csv") || type === "text/csv") return "csv";
+  if (type.startsWith("image/") || /\.(png|jpe?g|webp|bmp)$/i.test(name)) {
+    return "image";
+  }
+  if (
+    name.endsWith(".txt") ||
+    type === "text/plain" ||
+    type.startsWith("text/")
+  ) {
+    return "txt";
+  }
+  return "unknown";
+}
+
+/**
+ * Extract a single text blob from a supported statement `File`. Throws if the
+ * format can't be handled (e.g. a password-protected PDF, or a binary format
+ * like .xlsx we don't have a parser for).
+ */
+export async function extractStatementText(
+  file: File,
+  onProgress?: StatementExtractProgress
+): Promise<string> {
+  switch (detectStatementFormat(file)) {
+    case "pdf":
+      return extractPdfText(file);
+    case "csv":
+      // Convert CSV rows to whitespace-separated lines so the regex parser
+      // sees them the same shape as PDF rows (date, narration, amount).
+      return csvToPlainText(await file.text());
+    case "image":
+      return extractImageText(file, onProgress);
+    case "txt":
+      return file.text();
+    case "unknown":
+      throw new Error(
+        `Unsupported file type "${file.type || file.name.split(".").pop() || "unknown"}". Upload a PDF, CSV, TXT, or image statement.`
+      );
+  }
+}
+
+/** OCR a bank-statement screenshot via Tesseract.js. Dynamically imported so
+ *  the ~2 MB engine + language data only download when the user actually
+ *  picks an image. Accuracy on tabular layouts is mediocre — users typically
+ *  need to fix a few rows in the review step. */
+async function extractImageText(
+  file: File,
+  onProgress?: StatementExtractProgress
+): Promise<string> {
+  const { recognize } = await import("tesseract.js");
+  const result = await recognize(file, "eng", {
+    logger: (m: { status: string; progress: number }) => {
+      if (m.status === "recognizing text" && onProgress) {
+        onProgress({ stage: "ocr", progress: m.progress });
+      }
+    },
+  });
+  return result.data.text ?? "";
+}
+
+/** Minimal RFC-4180-ish CSV → space-joined text. Handles quoted fields and
+ *  doubled-quote escapes. Cells are joined with two spaces so the parser's
+ *  greedy whitespace splits behave well. */
+function csvToPlainText(csv: string): string {
+  const cleaned = csv.replace(/^\uFEFF/, "");
+  const lines = cleaned.split(/\r?\n/);
+  const out: string[] = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const cols: string[] = [];
+    let cur = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === "," && !inQuotes) {
+        cols.push(cur.trim());
+        cur = "";
+      } else {
+        cur += ch;
+      }
+    }
+    cols.push(cur.trim());
+    out.push(cols.filter(Boolean).join("  "));
+  }
+  return out.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // PDF → plain text
 // ---------------------------------------------------------------------------
 

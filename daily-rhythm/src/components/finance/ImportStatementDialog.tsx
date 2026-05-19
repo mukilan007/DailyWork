@@ -13,8 +13,10 @@ import {
   rupeesToPaise,
 } from "@/lib/finance";
 import {
+  ACCEPTED_STATEMENT_FORMATS,
   detectAccountInfo,
-  extractPdfText,
+  detectStatementFormat,
+  extractStatementText,
   parseStatement,
   type DetectedAccountInfo,
   type ParsedRow,
@@ -157,12 +159,27 @@ export function ImportStatementDialog({
     setFileName(file.name);
     setError(null);
     setStage("parsing");
-    setProgressMsg("Reading PDF…");
+    const fmt = detectStatementFormat(file);
+    setProgressMsg(
+      fmt === "pdf"
+        ? "Reading PDF…"
+        : fmt === "image"
+        ? "Running OCR on image…"
+        : "Reading file…"
+    );
     try {
-      const text = await extractPdfText(file);
+      const text = await extractStatementText(file, (info) => {
+        if (info.stage === "ocr") {
+          setProgressMsg(`Running OCR on image… ${Math.round(info.progress * 100)}%`);
+        }
+      });
       if (!text.trim()) {
         setError(
-          "This PDF has no extractable text (likely a scanned image). OCR isn't supported."
+          fmt === "pdf"
+            ? "This PDF has no extractable text (likely a scanned image). Try uploading a screenshot instead."
+            : fmt === "image"
+            ? "OCR couldn't read any text from this image. Try a sharper screenshot or upload the bank's PDF/CSV instead."
+            : "This file appears to be empty."
         );
         setStage("pick");
         return;
@@ -436,16 +453,17 @@ export function ImportStatementDialog({
           >
             <FileUp className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
             <p className="text-sm font-medium">
-              {fileName || "Click to choose a PDF bank statement"}
+              {fileName || "Click to choose a bank statement"}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              Works best with text-based PDFs from HDFC, ICICI, SBI, Axis, Kotak, etc.
+              Accepts PDF, CSV, TXT, or image (PNG / JPG / WebP). Images use
+              OCR — slower and may need a few row fixes in the review step.
             </p>
           </label>
           <input
             id="import-pdf-file"
             type="file"
-            accept="application/pdf"
+            accept={ACCEPTED_STATEMENT_FORMATS}
             className="sr-only"
             onChange={handleFile}
             disabled={!pickReady}
