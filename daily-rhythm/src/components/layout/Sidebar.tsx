@@ -13,6 +13,11 @@ import {
   ListTodo,
   Flame,
   Code2,
+  Wallet,
+  ArrowLeftRight,
+  PieChart,
+  Landmark,
+  Tags,
   LogOut,
   ChevronDown,
   X,
@@ -57,6 +62,17 @@ const HEALTH: NavGroup = {
   ],
 };
 
+const FINANCE: NavGroup = {
+  label: "Finance",
+  icon: Wallet,
+  children: [
+    { to: "/finance/transactions", label: "Transactions", icon: ArrowLeftRight },
+    { to: "/finance/stats", label: "Stats", icon: PieChart },
+    { to: "/finance/accounts", label: "Accounts", icon: Landmark },
+    { to: "/finance/categories", label: "Categories", icon: Tags },
+  ],
+};
+
 const SETTINGS: NavGroup = {
   label: "Settings",
   icon: SettingsIcon,
@@ -80,6 +96,7 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
     g.children.some((c) => location.pathname.startsWith(c.to));
 
   const [healthOpen, setHealthOpen] = useState(() => isInGroup(HEALTH));
+  const [financeOpen, setFinanceOpen] = useState(() => isInGroup(FINANCE));
   const [settingsOpen, setSettingsOpen] = useState(() => isInGroup(SETTINGS));
 
   // Desktop-only icon rail. On mobile the sidebar is a slide-in overlay and
@@ -185,6 +202,10 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
                 <NavItemLink key={child.to} {...child} collapsed />
               ))}
               <RailDivider />
+              {FINANCE.children.map((child) => (
+                <NavItemLink key={child.to} {...child} collapsed />
+              ))}
+              <RailDivider />
               {SETTINGS.children.map((child) => (
                 <NavItemLink key={child.to} {...child} collapsed />
               ))}
@@ -203,6 +224,13 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
                 group={HEALTH}
                 open={healthOpen}
                 onToggle={() => setHealthOpen((o) => !o)}
+              />
+
+              <SectionLabel>Finance</SectionLabel>
+              <NavGroupSection
+                group={FINANCE}
+                open={financeOpen}
+                onToggle={() => setFinanceOpen((o) => !o)}
               />
 
               <SectionLabel>Account</SectionLabel>

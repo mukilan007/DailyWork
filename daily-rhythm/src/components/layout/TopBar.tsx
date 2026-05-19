@@ -5,11 +5,18 @@ import { useTheme } from "@/hooks/useTheme";
 
 const TITLES: Record<string, string> = {
   "/": "Home",
+  "/dashboard": "Dashboard",
   "/daily-routine": "Daily Routine",
   "/todos": "Todos",
   "/gym": "Gym Workout",
+  "/coding-tracker": "Coding Tracker",
   "/health/period": "Period Tracker",
   "/health/diabetes": "Diabetes",
+  "/finance/transactions": "Transactions",
+  "/finance/stats": "Stats",
+  "/finance/accounts": "Accounts",
+  "/finance/categories": "Categories",
+  "/finance": "Finance",
   "/settings/profile": "Profile",
   "/settings/appearance": "Appearance",
   "/settings/integrations": "Integrations",
