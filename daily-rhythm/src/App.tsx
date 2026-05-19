@@ -11,6 +11,10 @@ import { MotivationPage } from "@/pages/Motivation";
 import { CodingTrackerPage } from "@/pages/CodingTracker";
 import { HealthPeriodPage } from "@/pages/HealthPeriod";
 import { HealthDiabetesPage } from "@/pages/HealthDiabetes";
+import { FinanceTransactionsPage } from "@/pages/FinanceTransactions";
+import { FinanceStatsPage } from "@/pages/FinanceStats";
+import { FinanceAccountsPage } from "@/pages/FinanceAccounts";
+import { FinanceCategoriesPage } from "@/pages/FinanceCategories";
 import { SettingsProfilePage } from "@/pages/SettingsProfile";
 import { SettingsAppearancePage } from "@/pages/SettingsAppearance";
 import { SettingsIntegrationsPage } from "@/pages/SettingsIntegrations";
@@ -52,6 +56,11 @@ export default function App() {
               <Route path="/motivation" element={<Navigate to="/" replace />} />
               <Route path="/health/period" element={<HealthPeriodPage />} />
               <Route path="/health/diabetes" element={<HealthDiabetesPage />} />
+              <Route path="/finance/transactions" element={<FinanceTransactionsPage />} />
+              <Route path="/finance/stats" element={<FinanceStatsPage />} />
+              <Route path="/finance/accounts" element={<FinanceAccountsPage />} />
+              <Route path="/finance/categories" element={<FinanceCategoriesPage />} />
+              <Route path="/finance" element={<Navigate to="/finance/transactions" replace />} />
               <Route path="/settings/profile" element={<SettingsProfilePage />} />
               <Route path="/settings/appearance" element={<SettingsAppearancePage />} />
               <Route path="/settings/integrations" element={<SettingsIntegrationsPage />} />
