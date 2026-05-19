@@ -579,7 +579,7 @@ function parseLine(
     } else if (prevPaise > 0 && lastPaise === 0) {
       amountPaise = prevPaise;
       kind = "expense";
-    } else if (prevBalancePaise !== null) {
+    } else if (prevBalancePaise !== null && balancePaise !== null) {
       const delta = balancePaise - prevBalancePaise;
       amountPaise = Math.abs(delta) || lastPaise || prevPaise;
       kind = delta >= 0 ? "income" : "expense";
@@ -595,7 +595,7 @@ function parseLine(
     if (raw < 0) {
       // Explicit negative → refund / credit.
       kind = "income";
-    } else if (prevBalancePaise !== null) {
+    } else if (prevBalancePaise !== null && balancePaise !== null) {
       kind = balancePaise >= prevBalancePaise ? "income" : "expense";
     } else {
       kind = "expense";
