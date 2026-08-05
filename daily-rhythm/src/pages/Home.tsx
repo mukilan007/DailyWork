@@ -8,6 +8,7 @@ import {
   ArrowRight,
   CalendarRange,
   CalendarHeart,
+  Flame,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { SkeletonStatGrid, SkeletonCard } from "@/components/ui/Skeleton";
@@ -17,6 +18,8 @@ import type { Activity, ActivityCompletion, Workout, GlucoseReading, PeriodLog }
 import { ymd, weekDates, DAY_LABELS, formatDate } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import { computeCycleInsights } from "./HealthPeriod";
+import { fetchAgendaData, type AgendaData } from "@/lib/agenda";
+import { MoodCheckIn } from "@/components/MoodCheckIn";
 
 /** Available time windows for the dashboard's time-based data. Keeping the
  *  options in one table lets the selector, query window, and stat labels
@@ -52,6 +55,23 @@ export function HomePage() {
     () => RANGE_OPTIONS.find((r) => r.id === rangeId) ?? RANGE_OPTIONS[0],
     [rangeId]
   );
+  /** Smart Daily Agenda — fetched independently of the main dashboard data
+   *  so a failure here can never block (or clear the error state of) the
+   *  existing panels. */
+  const [agenda, setAgenda] = useState<AgendaData | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      const result = await fetchAgendaData(supabase, user.id);
+      if (cancelled) return;
+      if (!result.error) setAgenda(result.agenda);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -115,6 +135,9 @@ export function HomePage() {
         activeIds.has(c.activity_id)
       );
 
+      // Clear any error from a previous failed fetch — otherwise the error
+      // screen sticks even after a successful refetch.
+      setError(null);
       setData({
         activities: activitiesData,
         completions: visibleCompletions,
@@ -184,6 +207,10 @@ export function HomePage() {
   return (
     <div className="space-y-6">
       <Hero greeting={greeting} name={name} />
+
+      {agenda && <AgendaCard agenda={agenda} />}
+
+      <MoodCheckIn />
 
       <RangeSelector value={rangeId} onChange={setRangeId} />
 
@@ -416,6 +443,138 @@ export function HomePage() {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/** One concrete agenda item for the compact checklist on the dashboard. */
+type AgendaListItem = { key: string; label: string; tag: string; dot: string };
+
+/** Compact "Today's agenda" card: counts, solve-goal/streak line, and the
+ *  first ~5 concrete items, linking to the full /today planner. */
+function AgendaCard({ agenda }: { agenda: AgendaData }) {
+  const items: AgendaListItem[] = [
+    ...agenda.overdueTodos.map((t) => ({
+      key: `o-${t.id}`,
+      label: t.title,
+      tag: "overdue",
+      dot: "bg-rose-500",
+    })),
+    ...agenda.todayTodos.map((t) => ({
+      key: `t-${t.id}`,
+      label: t.title,
+      tag: "today",
+      dot: "bg-amber-500",
+    })),
+    ...agenda.habitsDue.map((a) => ({
+      key: `h-${a.id}`,
+      label: `${a.icon ? `${a.icon} ` : ""}${a.name}`,
+      tag: "habit",
+      dot: "bg-emerald-500",
+    })),
+    ...agenda.revisions.map((p) => ({
+      key: `r-${p.id}`,
+      label: `Revise: ${p.title}`,
+      tag: "revise",
+      dot: "bg-indigo-500",
+    })),
+    ...agenda.followUpsDue.map((j) => ({
+      key: `f-${j.id}`,
+      label: `Follow up: ${j.company} — ${j.role}`,
+      tag: "follow-up",
+      dot: "bg-sky-500",
+    })),
+  ];
+  const visible = items.slice(0, 5);
+  const remaining = items.length - visible.length;
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <div>
+          <CardTitle>Today&rsquo;s agenda</CardTitle>
+          <CardDescription>
+            {items.length === 0
+              ? "All clear — nothing due right now."
+              : `${items.length} item${items.length === 1 ? "" : "s"} need attention.`}
+          </CardDescription>
+        </div>
+        <Link
+          to="/today"
+          className="text-xs font-medium text-primary hover:underline inline-flex items-center gap-1"
+        >
+          Open planner <ArrowRight className="h-3 w-3" />
+        </Link>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 rounded-lg border bg-muted/30 p-3">
+          <AgendaStat label="Overdue" value={agenda.overdueTodos.length} danger />
+          <AgendaStat label="Due today" value={agenda.todayTodos.length} />
+          <AgendaStat label="Habits left" value={agenda.habitsDue.length} />
+          <AgendaStat label="Revisions" value={agenda.revisions.length} />
+          <AgendaStat label="Follow-ups" value={agenda.followUpsDue.length} />
+        </div>
+
+        <div className="flex items-center gap-2 text-sm">
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+              agenda.streak > 0
+                ? "bg-orange-500/10 text-orange-600 dark:text-orange-400 ring-1 ring-orange-500/20"
+                : "bg-muted text-muted-foreground"
+            )}
+          >
+            <Flame className="h-3.5 w-3.5" />
+            <span className="tabular-nums">{agenda.streak}</span>
+            <span className="font-normal text-[10px] opacity-80">
+              {agenda.streak === 1 ? "day" : "days"}
+            </span>
+          </span>
+          <span className={cn(agenda.solveGoal.met ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
+            {agenda.solveGoal.solvedToday}/{agenda.solveGoal.target} solved today
+            {agenda.solveGoal.met ? " — goal met" : ""}
+          </span>
+        </div>
+
+        {visible.length > 0 && (
+          <ul className="space-y-2">
+            {visible.map((item) => (
+              <li key={item.key} className="flex items-center gap-3">
+                <span
+                  className={cn("h-2.5 w-2.5 rounded-full ring-1 ring-border shrink-0", item.dot)}
+                  aria-hidden
+                />
+                <span className="text-sm truncate">{item.label}</span>
+                <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground shrink-0">
+                  {item.tag}
+                </span>
+              </li>
+            ))}
+            {remaining > 0 && (
+              <li className="text-xs text-muted-foreground">+{remaining} more in the planner</li>
+            )}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Tiny count stat inside the agenda card. */
+function AgendaStat({ label, value, danger }: { label: string; value: number; danger?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground truncate">
+        {label}
+      </p>
+      <p
+        className={cn(
+          "mt-1 text-lg font-semibold tracking-tight tabular-nums",
+          danger && value > 0 && "text-rose-600 dark:text-rose-400"
+        )}
+      >
+        {value}
+      </p>
     </div>
   );
 }

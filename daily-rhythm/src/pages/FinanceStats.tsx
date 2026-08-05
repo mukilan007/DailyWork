@@ -614,16 +614,9 @@ function BudgetTab({
   onDelete: (b: FinanceBudget) => void | Promise<void>;
   busy: boolean;
 }) {
-  if (side === "income") {
-    return (
-      <EmptyState
-        icon={<BarChart3 className="h-6 w-6" />}
-        title="Budgets apply to expenses"
-        description="Switch to the Exp. tab to set and view monthly limits."
-      />
-    );
-  }
-  // Spent map: top-level category id -> sum
+  // Spent map: top-level category id -> sum.
+  // NOTE: hooks must run before any early return — a conditional return above
+  // a hook changes the hook count between renders and crashes React.
   const spentByCat = useMemo(() => {
     const catMap = new Map(categories.map((c) => [c.id, c]));
     const totals = new Map<string, number>();
@@ -639,6 +632,16 @@ function BudgetTab({
     }
     return { byTop: totals, overall };
   }, [transactions, categories]);
+
+  if (side === "income") {
+    return (
+      <EmptyState
+        icon={<BarChart3 className="h-6 w-6" />}
+        title="Budgets apply to expenses"
+        description="Switch to the Exp. tab to set and view monthly limits."
+      />
+    );
+  }
 
   return (
     <div className="space-y-4">

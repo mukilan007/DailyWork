@@ -8,6 +8,15 @@ export function ymd(d: Date = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
+/**
+ * Parse a `YYYY-MM-DD` string as *local* midnight. `new Date("YYYY-MM-DD")`
+ * parses as UTC midnight, which shifts the day in negative-UTC timezones.
+ */
+export function parseYmd(s: string): Date {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
 export function addDays(d: Date, n: number): Date {
   const next = new Date(d);
   next.setDate(next.getDate() + n);
@@ -46,9 +55,10 @@ export function formatLongDate(d: Date = new Date()): string {
 
 /** 1-based day-of-year for a local date. Good enough for stable daily picks. */
 export function dayOfYear(d: Date = new Date()): number {
-  const start = new Date(d.getFullYear(), 0, 0);
-  const diff = d.getTime() - start.getTime();
-  return Math.floor(diff / 86_400_000);
+  // Diff in UTC so a DST hour shift can't push the result off by a day.
+  const day = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  const start = Date.UTC(d.getFullYear(), 0, 0);
+  return Math.floor((day - start) / 86_400_000);
 }
 
 /** Short relative time: "just now", "5m ago", "2h ago", "3d ago", or a date for older. */

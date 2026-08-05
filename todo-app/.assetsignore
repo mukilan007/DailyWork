@@ -1,0 +1,16 @@
+# Files that must never be published by `wrangler deploy` — the Worker serves
+# this whole directory as static assets, and wrangler does NOT honor .gitignore.
+# `.env` holds SUPABASE_ACCESS_TOKEN / SUPABASE_DB_PASSWORD; without this file
+# it would be publicly served at /.env.
+.env
+.env.*
+node_modules
+supabase
+scripts
+schema.sql
+package.json
+package-lock.json
+MIGRATIONS.md
+README.md
+.gitignore
+.assetsignore

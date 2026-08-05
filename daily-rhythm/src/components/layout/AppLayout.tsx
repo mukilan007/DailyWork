@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
+import { CommandPalette } from "@/components/CommandPalette";
 
 export function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -14,6 +15,7 @@ export function AppLayout() {
 
   return (
     <div className="flex h-screen w-full bg-background">
+      <CommandPalette />
       <Sidebar mobileOpen={mobileOpen} onCloseMobile={() => setMobileOpen(false)} />
 
       <div className="flex-1 flex flex-col min-w-0">

@@ -11,6 +11,7 @@ import {
   Flag,
   AlertCircle,
   CalendarClock,
+  Repeat,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -26,9 +27,24 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
-import { formatRelative } from "@/lib/dates";
+import { formatRelative, ymd } from "@/lib/dates";
 import { exportReport } from "@/lib/export";
-import type { Todo, TodoPriority } from "@/types";
+import {
+  createTodoRecurrence,
+  deleteTodoRecurrence,
+  listTodoRecurrences,
+  materialiseDueTodoRecurrences,
+  occurrenceDueAtIso,
+  recurrenceLabel,
+  DEFAULT_DUE_TIME,
+} from "@/lib/todo-recur";
+import type {
+  Frequency,
+  Todo,
+  TodoPriority,
+  TodoRecurrence,
+  TodoRecurrenceTemplate,
+} from "@/types";
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | "active" | "done";
@@ -49,12 +65,18 @@ export function TodosPage() {
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Todo | null>(null);
+  const [repeatsOpen, setRepeatsOpen] = useState(false);
 
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
+      // Materialise due recurrences once per mount (mirrors
+      // FinanceTransactions) — before the select so today's generated
+      // occurrences appear in this load. Idempotent under StrictMode
+      // double-effects via the (recurrence_id, recurrence_due_on) index.
+      await materialiseDueTodoRecurrences(supabase, user.id);
       const { data, error } = await supabase
         .from("todos")
         .select("*")
@@ -73,6 +95,8 @@ export function TodosPage() {
     if (!user) return;
     setError(null);
     if (editing) {
+      // Note: recurrence_id / recurrence_due_on are intentionally NOT in the
+      // patch — editing a materialised todo must preserve its repeat link.
       const patch = {
         title: input.title,
         description: input.description,
@@ -98,6 +122,44 @@ export function TodosPage() {
         setTodos((ts) => ts.map((t) => (t.id === data.id ? data : t)));
       }
     } else {
+      // Optional recurrence: create the schedule row first, then insert the
+      // first occurrence linked to it so it appears immediately.
+      let recurrenceId: string | null = null;
+      let recurrenceDueOn: string | null = null;
+      let dueAt = input.due_at;
+      if (input.recurrence) {
+        const firstDue = input.due_at ? new Date(input.due_at) : new Date();
+        const occurrence = ymd(firstDue);
+        const pad = (n: number) => String(n).padStart(2, "0");
+        const dueTime = input.due_at
+          ? `${pad(firstDue.getHours())}:${pad(firstDue.getMinutes())}`
+          : DEFAULT_DUE_TIME;
+        if (!dueAt) dueAt = occurrenceDueAtIso(occurrence, dueTime);
+        const template: TodoRecurrenceTemplate = {
+          title: input.title,
+          description: input.description,
+          priority: input.priority,
+          estimated_min: input.estimated_min,
+          due_time: dueTime,
+        };
+        try {
+          const rec = await createTodoRecurrence(supabase, user.id, {
+            template_json: template,
+            frequency: input.recurrence.frequency,
+            interval_n: input.recurrence.interval_n,
+            start_on: occurrence,
+            end_on: input.recurrence.end_on,
+            // The first occurrence is inserted right below — anchor the
+            // materialiser past it so it isn't regenerated.
+            last_materialised_on: occurrence,
+          });
+          recurrenceId = rec.id;
+          recurrenceDueOn = occurrence;
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+          return;
+        }
+      }
       const { data, error } = await supabase
         .from("todos")
         .insert({
@@ -105,8 +167,10 @@ export function TodosPage() {
           title: input.title,
           description: input.description,
           priority: input.priority,
-          due_at: input.due_at,
+          due_at: dueAt,
           estimated_min: input.estimated_min,
+          recurrence_id: recurrenceId,
+          recurrence_due_on: recurrenceDueOn,
         })
         .select()
         .single();
@@ -250,6 +314,15 @@ export function TodosPage() {
                 })
               }
             />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRepeatsOpen(true)}
+              disabled={loading}
+              title="Manage repeating tickets"
+            >
+              <Repeat className="h-4 w-4" /> Repeats
+            </Button>
             <Button onClick={startAdd} disabled={loading}>
               <Plus className="h-4 w-4" /> Add Ticket
             </Button>
@@ -369,7 +442,133 @@ export function TodosPage() {
         }}
         onSave={handleSave}
       />
+
+      <ManageRepeatsDialog
+        open={repeatsOpen}
+        onClose={() => setRepeatsOpen(false)}
+        onDeleted={(id) =>
+          // The FK is `on delete set null` — existing tickets survive, so
+          // mirror that locally instead of refetching.
+          setTodos((prev) =>
+            prev.map((t) => (t.recurrence_id === id ? { ...t, recurrence_id: null } : t))
+          )
+        }
+      />
     </div>
+  );
+}
+
+// ---------- manage repeats ----------
+
+function ManageRepeatsDialog({
+  open,
+  onClose,
+  onDeleted,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onDeleted: (recurrenceId: string) => void;
+}) {
+  const { user } = useAuth();
+  const [recurrences, setRecurrences] = useState<TodoRecurrence[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !user) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setErr(null);
+      try {
+        const rows = await listTodoRecurrences(supabase, user.id);
+        if (!cancelled) setRecurrences(rows);
+      } catch (e) {
+        if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
+      }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, user]);
+
+  async function handleDelete(rec: TodoRecurrence) {
+    const title = rec.template_json.title;
+    if (deletingId) return;
+    if (!confirm(`Stop repeating "${title}"? Existing tickets are kept.`)) return;
+    setDeletingId(rec.id);
+    setErr(null);
+    try {
+      await deleteTodoRecurrence(supabase, rec.id);
+      setRecurrences((prev) => prev.filter((r) => r.id !== rec.id));
+      onDeleted(rec.id);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Repeating tickets"
+      description="Deleting a repeat stops future tickets — already-created ones are kept."
+    >
+      <div className="space-y-3">
+        {err && (
+          <p role="alert" className="text-sm text-destructive">
+            {err}
+          </p>
+        )}
+        {loading ? (
+          <SkeletonList rows={2} />
+        ) : recurrences.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">
+            No repeating tickets yet. Turn on "Repeat" when creating a ticket.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {recurrences.map((rec) => (
+              <li
+                key={rec.id}
+                className="flex items-start gap-3 rounded-lg border border-border/60 bg-card p-3"
+              >
+                <Repeat className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{rec.template_json.title}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {recurrenceLabel(rec)} · from {rec.start_on}
+                    {rec.end_on && <> · until {rec.end_on}</>}
+                    {" · "}
+                    {rec.template_json.priority} priority
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 hover:text-destructive"
+                  aria-label={`Stop repeating ${rec.template_json.title}`}
+                  disabled={deletingId !== null}
+                  onClick={() => handleDelete(rec)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="flex justify-end pt-1">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -405,7 +604,16 @@ function formatDueLabel(dueAt: string): string {
   if (isToday(dueAt)) {
     return `Today ${due.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
   }
-  if (absMin < 60 * 24 * 2 && diffMs > 0) {
+  // "Tomorrow" means the next calendar day, not "within 48 hours" — a
+  // duration check mislabels e.g. Wednesday 5 AM as Tomorrow on Monday night.
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (
+    diffMs > 0 &&
+    due.getFullYear() === tomorrow.getFullYear() &&
+    due.getMonth() === tomorrow.getMonth() &&
+    due.getDate() === tomorrow.getDate()
+  ) {
     return `Tomorrow ${due.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
   }
   return due.toLocaleDateString([], { month: "short", day: "numeric" }) +
@@ -563,6 +771,12 @@ function TicketCard({ todo, onToggle, onEdit, onDelete }: TicketCardProps) {
                     {formatEstimate(todo.estimated_min)}
                   </Badge>
                 )}
+                {todo.recurrence_id && (
+                  <Badge variant="outline" title="Created by a repeating schedule">
+                    <Repeat className="h-3 w-3" />
+                    Repeats
+                  </Badge>
+                )}
                 <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">
                   {formatRelative(todo.created_at)}
                 </span>
@@ -639,7 +853,15 @@ type TicketDraft = {
   priority: TodoPriority;
   due_at: string | null;
   estimated_min: number | null;
+  /** Only settable when creating (like finance's TransactionDialog). */
+  recurrence: null | {
+    frequency: Frequency;
+    interval_n: number;
+    end_on: string | null;
+  };
 };
+
+const FREQUENCIES: Frequency[] = ["daily", "weekly", "monthly", "yearly"];
 
 interface TicketDialogProps {
   open: boolean;
@@ -654,6 +876,10 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
   const [priority, setPriority] = useState<TodoPriority>("medium");
   const [dueLocal, setDueLocal] = useState(""); // datetime-local string
   const [estimate, setEstimate] = useState("");
+  const [showRecurrence, setShowRecurrence] = useState(false);
+  const [frequency, setFrequency] = useState<Frequency>("daily");
+  const [intervalN, setIntervalN] = useState("1");
+  const [endOn, setEndOn] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -672,6 +898,10 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
       setDueLocal("");
       setEstimate("");
     }
+    setShowRecurrence(false);
+    setFrequency("daily");
+    setIntervalN("1");
+    setEndOn("");
     setErr(null);
   }, [open, editing]);
 
@@ -700,6 +930,14 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
         priority,
         due_at: localInputToIso(dueLocal),
         estimated_min: estMin,
+        recurrence:
+          !editing && showRecurrence
+            ? {
+                frequency,
+                interval_n: Math.max(1, Number(intervalN) || 1),
+                end_on: endOn || null,
+              }
+            : null,
       });
     } finally {
       setSaving(false);
@@ -766,7 +1004,6 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
               type="number"
               min={1}
               max={1440}
-              step={5}
               inputMode="numeric"
               value={estimate}
               onChange={(e) => setEstimate(e.target.value)}
@@ -819,6 +1056,68 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
             </div>
           )}
         </div>
+
+        {/* Recurrence toggle — creation only, same UX as finance's
+            TransactionDialog. Editing a materialised occurrence edits just
+            that ticket; the schedule lives under "Repeats". */}
+        {!editing && (
+          <div className="rounded-md border p-3 space-y-3">
+            <button
+              type="button"
+              onClick={() => setShowRecurrence((s) => !s)}
+              className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+            >
+              <Repeat className="h-4 w-4" />
+              {showRecurrence ? "Remove repeat" : "Repeat"}
+            </button>
+            {showRecurrence && (
+              <>
+                <div className="grid grid-cols-3 gap-2 text-sm">
+                  <div className="space-y-1">
+                    <Label htmlFor="ticket-freq">Frequency</Label>
+                    <Select
+                      id="ticket-freq"
+                      value={frequency}
+                      onChange={(e) => setFrequency(e.target.value as Frequency)}
+                    >
+                      {FREQUENCIES.map((f) => (
+                        <option key={f} value={f}>
+                          {f}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="ticket-interval">Every</Label>
+                    <Input
+                      id="ticket-interval"
+                      type="number"
+                      min={1}
+                      max={365}
+                      value={intervalN}
+                      onChange={(e) => setIntervalN(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="ticket-end">End on</Label>
+                    <Input
+                      id="ticket-end"
+                      type="date"
+                      value={endOn}
+                      onChange={(e) => setEndOn(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {dueLocal
+                    ? "Repeats from the due date, at the same time of day."
+                    : "No due time set — repeats from today, due 9:00 AM."}{" "}
+                  Leave "End on" blank to repeat forever.
+                </p>
+              </>
+            )}
+          </div>
+        )}
 
         {err && (
           <p role="alert" className="text-sm text-destructive">

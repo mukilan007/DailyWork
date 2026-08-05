@@ -9,9 +9,24 @@ interface DialogProps {
   description?: string;
   children: ReactNode;
   className?: string;
+  /** When true, clicking the backdrop does NOT close the dialog — only the
+   *  X button, Escape, or an explicit action inside the dialog can (all of
+   *  which still go through `onClose`, so callers can guard those too).
+   *  Purely additive: defaults to false, so existing dialogs are unchanged.
+   *  Use for flows where a stray outside click would destroy in-progress
+   *  work (e.g. a half-reviewed statement import). */
+  disableOutsideClose?: boolean;
 }
 
-export function Dialog({ open, onClose, title, description, children, className }: DialogProps) {
+export function Dialog({
+  open,
+  onClose,
+  title,
+  description,
+  children,
+  className,
+  disableOutsideClose = false,
+}: DialogProps) {
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
@@ -34,7 +49,7 @@ export function Dialog({ open, onClose, title, description, children, className 
       aria-modal="true"
       aria-label={title}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
+      onClick={disableOutsideClose ? undefined : onClose}
     >
       <div
         className={cn(

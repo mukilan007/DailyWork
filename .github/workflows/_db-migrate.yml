@@ -69,9 +69,15 @@ jobs:
           STAMP=$(date -u +%Y%m%dT%H%M%SZ)
           PREFIX="backups/${STAMP}-${GITHUB_SHA}"
           # Run schema + data dumps in parallel — independent network round-trips.
+          # NB: a bare `wait` ignores child exit codes (and set -e can't see
+          # them), so a failed dump would let a destructive push proceed
+          # without a backup. Wait on each PID explicitly.
           supabase db dump --linked -f "${PREFIX}-schema.sql" &
+          SCHEMA_PID=$!
           supabase db dump --linked --data-only -f "${PREFIX}-data.sql" &
-          wait
+          DATA_PID=$!
+          wait "$SCHEMA_PID"
+          wait "$DATA_PID"
           ls -lh backups/
 
       - name: Upload backup artifact

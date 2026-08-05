@@ -18,6 +18,14 @@ import { FinanceCategoriesPage } from "@/pages/FinanceCategories";
 import { SettingsProfilePage } from "@/pages/SettingsProfile";
 import { SettingsAppearancePage } from "@/pages/SettingsAppearance";
 import { SettingsIntegrationsPage } from "@/pages/SettingsIntegrations";
+import { TodayPage } from "@/pages/Today";
+import { WeeklyReviewPage } from "@/pages/WeeklyReview";
+import { FocusPage } from "@/pages/Focus";
+import { PrepRoadmapPage } from "@/pages/PrepRoadmap";
+import { PrepApplicationsPage } from "@/pages/PrepApplications";
+import { PrepInterviewsPage } from "@/pages/PrepInterviews";
+import { PrepStudyPage } from "@/pages/PrepStudy";
+import { PrepVaultPage } from "@/pages/PrepVault";
 
 function ProtectedRoutes() {
   const { session, loading } = useAuth();
@@ -53,6 +61,15 @@ export default function App() {
               <Route path="/todos" element={<TodosPage />} />
               <Route path="/gym" element={<GymPage />} />
               <Route path="/coding-tracker" element={<CodingTrackerPage />} />
+              <Route path="/today" element={<TodayPage />} />
+              <Route path="/weekly-review" element={<WeeklyReviewPage />} />
+              <Route path="/focus" element={<FocusPage />} />
+              <Route path="/prep/roadmap" element={<PrepRoadmapPage />} />
+              <Route path="/prep/applications" element={<PrepApplicationsPage />} />
+              <Route path="/prep/interviews" element={<PrepInterviewsPage />} />
+              <Route path="/prep/study" element={<PrepStudyPage />} />
+              <Route path="/prep/vault" element={<PrepVaultPage />} />
+              <Route path="/prep" element={<Navigate to="/prep/roadmap" replace />} />
               <Route path="/motivation" element={<Navigate to="/" replace />} />
               <Route path="/health/period" element={<HealthPeriodPage />} />
               <Route path="/health/diabetes" element={<HealthDiabetesPage />} />

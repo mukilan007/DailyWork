@@ -12,7 +12,7 @@ import type {
   RecurrenceTemplate,
   TxKind,
 } from "@/types";
-import { ymd } from "@/lib/dates";
+import { parseYmd, ymd } from "@/lib/dates";
 
 // ----------------------------------------------------------------------------
 // Money formatting
@@ -155,8 +155,8 @@ export function sliceByTopCategory(
   const totals = new Map<string, { label: string; total: number }>();
   let grandTotal = 0;
   for (const r of rows) {
-    if (r.kind !== kind || !r.category_id) continue;
-    const cat = catMap.get(r.category_id);
+    if (r.kind !== kind) continue;
+    const cat = r.category_id ? catMap.get(r.category_id) : undefined;
     const top = cat?.parent_id ? catMap.get(cat.parent_id) ?? cat : cat;
     const key = top?.id ?? "uncategorised";
     const label = top?.name ?? "Uncategorised";
@@ -291,8 +291,21 @@ export const MONTH_LABEL = [
 // Recurrence materialisation
 // ----------------------------------------------------------------------------
 
-/** Compute the next due date after `from` for the given frequency / interval. */
-export function nextDueDate(from: Date, freq: Frequency, interval: number): Date {
+/**
+ * Compute the next due date after `from` for the given frequency / interval.
+ *
+ * `anchorDay` is the day-of-month of the recurrence's start date. Monthly and
+ * yearly steps clamp to the last day of shorter months instead of overflowing
+ * (Jan 31 + 1 month = Feb 28, not Mar 3), and re-anchor when the next month is
+ * long enough (Feb 28 → Mar 31), so a "31st of the month" recurrence never
+ * drifts.
+ */
+export function nextDueDate(
+  from: Date,
+  freq: Frequency,
+  interval: number,
+  anchorDay: number = from.getDate()
+): Date {
   const d = new Date(from);
   switch (freq) {
     case "daily":
@@ -301,19 +314,35 @@ export function nextDueDate(from: Date, freq: Frequency, interval: number): Date
     case "weekly":
       d.setDate(d.getDate() + 7 * interval);
       break;
-    case "monthly":
-      d.setMonth(d.getMonth() + interval);
-      break;
-    case "yearly":
-      d.setFullYear(d.getFullYear() + interval);
-      break;
+    case "monthly": {
+      const target = new Date(d.getFullYear(), d.getMonth() + interval, 1);
+      const lastDay = new Date(
+        target.getFullYear(),
+        target.getMonth() + 1,
+        0
+      ).getDate();
+      target.setDate(Math.min(anchorDay, lastDay));
+      return target;
+    }
+    case "yearly": {
+      const target = new Date(d.getFullYear() + interval, d.getMonth(), 1);
+      const lastDay = new Date(
+        target.getFullYear(),
+        target.getMonth() + 1,
+        0
+      ).getDate();
+      target.setDate(Math.min(anchorDay, lastDay));
+      return target;
+    }
   }
   return d;
 }
 
 /**
  * For each recurrence, INSERT all due transactions up to `today` and update
- * `last_materialised_on`. Idempotent: re-running for the same day is a no-op.
+ * `last_materialised_on`. Idempotent: duplicates are rejected by the unique
+ * index on (recurrence_id, occurred_on) and silently skipped, so concurrent
+ * runs (StrictMode double-effects, two tabs) can't double-insert.
  */
 export async function materialiseDueRecurrences(
   supabase: SupabaseClient,
@@ -326,27 +355,39 @@ export async function materialiseDueRecurrences(
     .eq("user_id", userId);
   if (error || !recs) return 0;
 
-  const todayYmd = ymd(today);
   let inserted = 0;
 
   for (const r of recs as FinanceRecurrence[]) {
-    if (r.end_on && r.end_on < todayYmd) continue;
+    if (!Number.isInteger(r.interval_n) || r.interval_n < 1) continue;
+    // Day-of-month anchor so monthly/yearly schedules don't drift off the
+    // start date when clamped by short months.
+    const anchorDay = parseYmd(r.start_on).getDate();
     let cursor: Date;
     if (r.last_materialised_on) {
-      cursor = nextDueDate(new Date(r.last_materialised_on), r.frequency, r.interval_n);
+      cursor = nextDueDate(
+        parseYmd(r.last_materialised_on),
+        r.frequency,
+        r.interval_n,
+        anchorDay
+      );
     } else {
-      cursor = new Date(r.start_on);
+      cursor = parseYmd(r.start_on);
     }
-    const cap = r.end_on ? new Date(r.end_on) : today;
+    // Backfill up to today, or up to end_on if the recurrence has ended —
+    // an ended recurrence may still have unmaterialised occurrences.
+    const cap = r.end_on ? parseYmd(r.end_on) : today;
     const upperBound = cap < today ? cap : today;
+    const upperYmd = ymd(upperBound);
 
     const toInsert: Array<Partial<FinanceTransaction>> = [];
-    while (ymd(cursor) <= ymd(upperBound)) {
+    let lastOccurrence: string | null = null;
+    while (ymd(cursor) <= upperYmd) {
       const t = r.template_json as RecurrenceTemplate;
+      lastOccurrence = ymd(cursor);
       toInsert.push({
         user_id: userId,
         kind: t.kind,
-        occurred_on: ymd(cursor),
+        occurred_on: lastOccurrence,
         account_id: t.account_id,
         to_account_id: t.kind === "transfer" ? t.to_account_id ?? null : null,
         category_id: t.kind === "transfer" ? null : t.category_id ?? null,
@@ -355,18 +396,24 @@ export async function materialiseDueRecurrences(
         note: t.note ?? null,
         recurrence_id: r.id,
       });
-      cursor = nextDueDate(cursor, r.frequency, r.interval_n);
+      cursor = nextDueDate(cursor, r.frequency, r.interval_n, anchorDay);
     }
 
-    if (toInsert.length > 0) {
+    if (toInsert.length > 0 && lastOccurrence) {
       const { error: insErr } = await supabase
         .from("finance_transactions")
-        .insert(toInsert);
+        .upsert(toInsert, {
+          onConflict: "recurrence_id,occurred_on",
+          ignoreDuplicates: true,
+        });
       if (!insErr) {
         inserted += toInsert.length;
+        // Anchor to the last generated occurrence, not today — anchoring to
+        // today would shift the whole schedule to whatever day the user
+        // happened to open the app.
         await supabase
           .from("finance_recurrences")
-          .update({ last_materialised_on: ymd(upperBound) })
+          .update({ last_materialised_on: lastOccurrence })
           .eq("id", r.id);
       }
     }

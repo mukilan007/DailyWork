@@ -14,6 +14,15 @@ import {
   Flame,
   Code2,
   Wallet,
+  CalendarClock,
+  CalendarCheck2,
+  Timer,
+  Briefcase,
+  Map as MapIcon,
+  KanbanSquare,
+  MessagesSquare,
+  BookOpen,
+  NotebookPen,
   ArrowLeftRight,
   PieChart,
   Landmark,
@@ -47,11 +56,26 @@ interface NavGroup {
 const PRIMARY: NavItem[] = [
   { to: "/", label: "Motivation", icon: Flame },
   { to: "/dashboard", label: "Dashboard", icon: Home },
+  { to: "/today", label: "Today", icon: CalendarClock },
   { to: "/daily-routine", label: "Daily Routine", icon: Activity },
   { to: "/todos", label: "Todos", icon: ListTodo },
+  { to: "/focus", label: "Focus", icon: Timer },
   { to: "/gym", label: "Gym Workout", icon: Dumbbell },
   { to: "/coding-tracker", label: "Coding Tracker", icon: Code2 },
+  { to: "/weekly-review", label: "Weekly Review", icon: CalendarCheck2 },
 ];
+
+const PREP: NavGroup = {
+  label: "Job Prep",
+  icon: Briefcase,
+  children: [
+    { to: "/prep/roadmap", label: "Roadmap", icon: MapIcon },
+    { to: "/prep/applications", label: "Applications", icon: KanbanSquare },
+    { to: "/prep/interviews", label: "Mock Interviews", icon: MessagesSquare },
+    { to: "/prep/study", label: "Study Log", icon: BookOpen },
+    { to: "/prep/vault", label: "Vault", icon: NotebookPen },
+  ],
+};
 
 const HEALTH: NavGroup = {
   label: "Health Tracker",
@@ -95,6 +119,7 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
   const isInGroup = (g: NavGroup) =>
     g.children.some((c) => location.pathname.startsWith(c.to));
 
+  const [prepOpen, setPrepOpen] = useState(() => isInGroup(PREP));
   const [healthOpen, setHealthOpen] = useState(() => isInGroup(HEALTH));
   const [financeOpen, setFinanceOpen] = useState(() => isInGroup(FINANCE));
   const [settingsOpen, setSettingsOpen] = useState(() => isInGroup(SETTINGS));
@@ -198,6 +223,10 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
                 <NavItemLink key={item.to} {...item} collapsed />
               ))}
               <RailDivider />
+              {PREP.children.map((child) => (
+                <NavItemLink key={child.to} {...child} collapsed />
+              ))}
+              <RailDivider />
               {HEALTH.children.map((child) => (
                 <NavItemLink key={child.to} {...child} collapsed />
               ))}
@@ -218,6 +247,13 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
                   <NavItemLink key={item.to} {...item} />
                 ))}
               </div>
+
+              <SectionLabel>Job Prep</SectionLabel>
+              <NavGroupSection
+                group={PREP}
+                open={prepOpen}
+                onToggle={() => setPrepOpen((o) => !o)}
+              />
 
               <SectionLabel>Health</SectionLabel>
               <NavGroupSection

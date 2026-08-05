@@ -97,13 +97,14 @@ function renderTodos() {
   }
 }
 
-async function optimistic(update, remote) {
-  const prev = todos;
-  todos = update(prev);
+async function optimistic(update, remote, revert) {
+  todos = update(todos);
   renderTodos();
   const { error } = await remote();
   if (error) {
-    todos = prev;
+    // Revert only this operation's change — restoring a whole snapshot
+    // would also undo concurrent operations that succeeded meanwhile.
+    todos = revert(todos);
     renderTodos();
     setMsg(appMsg, error.message, "error");
   }
@@ -173,17 +174,27 @@ addForm.addEventListener("submit", async (e) => {
 
   setMsg(appMsg, "");
 
+  // Block double-submit (Enter twice / Enter + click) while the insert is in
+  // flight — otherwise two identical rows are created.
+  const addBtn = addForm.querySelector("button");
+  newTitle.disabled = true;
+  if (addBtn) addBtn.disabled = true;
+
   const { data, error } = await supabase
     .from("todos")
     .insert({ title, user_id: currentUserId })
     .select(TODO_COLS)
     .single();
 
+  newTitle.disabled = false;
+  if (addBtn) addBtn.disabled = false;
+
   if (error) {
     setMsg(appMsg, error.message, "error");
     return;
   }
   newTitle.value = "";
+  newTitle.focus();
   todos = [data, ...todos];
   renderTodos();
 });
@@ -191,14 +202,17 @@ addForm.addEventListener("submit", async (e) => {
 async function toggleTodo(id, isDone) {
   await optimistic(
     (ts) => ts.map((t) => (t.id === id ? { ...t, is_done: isDone } : t)),
-    () => supabase.from("todos").update({ is_done: isDone }).eq("id", id)
+    () => supabase.from("todos").update({ is_done: isDone }).eq("id", id),
+    (ts) => ts.map((t) => (t.id === id ? { ...t, is_done: !isDone } : t))
   );
 }
 
 async function deleteTodo(id) {
+  const removed = todos.find((t) => t.id === id);
   await optimistic(
     (ts) => ts.filter((t) => t.id !== id),
-    () => supabase.from("todos").delete().eq("id", id)
+    () => supabase.from("todos").delete().eq("id", id),
+    (ts) => (removed ? [removed, ...ts] : ts)
   );
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus,
   Receipt,
@@ -8,6 +8,9 @@ import {
   CalendarDays,
   CalendarRange,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/Button";
@@ -23,7 +26,7 @@ import { ExportButton } from "@/components/ui/ExportButton";
 import { exportReport } from "@/lib/export";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
-import { ymd } from "@/lib/dates";
+import { parseYmd, ymd } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import type {
   AccountType,
@@ -42,6 +45,8 @@ import {
   materialiseDueRecurrences,
   monthGrid,
   MONTH_LABEL,
+  paiseToRupees,
+  rupeesToPaise,
   startOfMonth,
   sumTotals,
   txToCsvRows,
@@ -143,11 +148,25 @@ export function FinanceTransactionsPage() {
     };
   }, [filterMode, rangeFrom, rangeTo, year, month]);
 
-  // Calendar / Monthly views assume a single month / single year respectively,
-  // so in range mode auto-switch to Daily which is range-aware.
-  useEffect(() => {
-    if (filterMode === "range" && tab !== "daily") setTab("daily");
-  }, [filterMode, tab]);
+  // All three views are range-aware. The Calendar view needs a month cursor
+  // of its own in range mode (the range can span several months): we track
+  // it as `year*12 + month` and clamp to the months the range covers, so
+  // navigation can never walk outside the range. Null = "start of range".
+  const [rangeCalCursor, setRangeCalCursor] = useState<number | null>(null);
+  const rangeMonthSpan = useMemo(() => {
+    const f = parseYmd(fromDate);
+    const t = parseYmd(toDate);
+    return {
+      min: f.getFullYear() * 12 + f.getMonth(),
+      max: t.getFullYear() * 12 + t.getMonth(),
+    };
+  }, [fromDate, toDate]);
+  const calKey = Math.min(
+    rangeMonthSpan.max,
+    Math.max(rangeMonthSpan.min, rangeCalCursor ?? rangeMonthSpan.min)
+  );
+  const calYear = Math.floor(calKey / 12);
+  const calMonth = calKey % 12;
 
   // Load transactions for the filter window, plus a year of data when needed.
   useEffect(() => {
@@ -240,7 +259,9 @@ export function FinanceTransactionsPage() {
       amount_paise: draft.amount_paise,
       fees_paise: draft.fees_paise,
       note: draft.note || null,
-      recurrence_id: recurrenceId,
+      // Preserve the link to the recurrence when editing a materialised
+      // transaction — overwriting with null would orphan it.
+      recurrence_id: editing ? editing.recurrence_id : recurrenceId,
     };
     if (editing) {
       const { data, error: err } = await supabase
@@ -286,6 +307,38 @@ export function FinanceTransactionsPage() {
     }
     setTransactions((cur) => cur.filter((t) => t.id !== confirmDelete.id));
     setConfirmDelete(null);
+  }
+
+  /** Save a single inline-edited field (note / amount / category) for one
+   *  transaction. Optimistic: the list updates immediately, then rolls back
+   *  to the original row if the DB update fails. Returns success so the
+   *  inline editor can decide whether to close. */
+  async function handleInlineUpdate(
+    tx: FinanceTransaction,
+    patch: Partial<
+      Pick<FinanceTransaction, "note" | "amount_paise" | "category_id">
+    >
+  ): Promise<boolean> {
+    const prev = tx;
+    setTransactions((cur) =>
+      cur.map((t) => (t.id === tx.id ? { ...t, ...patch } : t))
+    );
+    const { data, error: err } = await supabase
+      .from("finance_transactions")
+      .update(patch)
+      .eq("id", tx.id)
+      .select()
+      .single();
+    if (err || !data) {
+      // Roll back to the exact pre-edit row.
+      setTransactions((cur) => cur.map((t) => (t.id === prev.id ? prev : t)));
+      setError(err?.message ?? "Couldn't save the change.");
+      return false;
+    }
+    setTransactions((cur) =>
+      cur.map((t) => (t.id === prev.id ? (data as FinanceTransaction) : t))
+    );
+    return true;
   }
 
   const exportRows = useMemo(
@@ -507,29 +560,23 @@ export function FinanceTransactionsPage() {
         )}
       </div>
 
-      {/* Sub-tabs */}
+      {/* Sub-tabs — all three views work in both Month and Range mode. */}
       <div className="flex border-b text-sm">
-        {(Object.keys(TAB_LABEL) as Tab[]).map((t) => {
-          const disabled = filterMode === "range" && t !== "daily";
-          return (
-            <button
-              key={t}
-              type="button"
-              onClick={() => !disabled && setTab(t)}
-              disabled={disabled}
-              title={disabled ? "Switch to Month filter to use this view" : undefined}
-              className={cn(
-                "px-4 py-2 -mb-px border-b-2 transition-colors",
-                tab === t
-                  ? "border-primary text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-                disabled && "opacity-40 cursor-not-allowed hover:text-muted-foreground"
-              )}
-            >
-              {TAB_LABEL[t]}
-            </button>
-          );
-        })}
+        {(Object.keys(TAB_LABEL) as Tab[]).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={cn(
+              "px-4 py-2 -mb-px border-b-2 transition-colors",
+              tab === t
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {TAB_LABEL[t]}
+          </button>
+        ))}
       </div>
 
       {/* Summary band */}
@@ -606,11 +653,13 @@ export function FinanceTransactionsPage() {
                               )?.name ?? null
                             : null
                         }
+                        categories={categories}
                         onEdit={() => {
                           setEditing(r);
                           setDialogOpen(true);
                         }}
                         onDelete={() => setConfirmDelete(r)}
+                        onInlineSave={(patch) => handleInlineUpdate(r, patch)}
                       />
                     ))}
                   </ul>
@@ -620,11 +669,55 @@ export function FinanceTransactionsPage() {
           </div>
         )
       ) : tab === "calendar" ? (
-        <CalendarView
-          year={year}
-          month={month}
+        filterMode === "range" ? (
+          <div className="space-y-3">
+            {/* Range-mode month pager — clamped to the months the range
+                spans. Day cells outside the range are dimmed/disabled and
+                `transactions` only contains in-range rows, so day totals
+                are automatically range-accurate. */}
+            <div className="flex items-center justify-between">
+              <Button
+                variant="outline"
+                onClick={() => setRangeCalCursor(calKey - 1)}
+                disabled={calKey <= rangeMonthSpan.min}
+                aria-label="Previous month"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="text-sm font-medium">
+                {MONTH_LABEL[calMonth]} {calYear}
+              </span>
+              <Button
+                variant="outline"
+                onClick={() => setRangeCalCursor(calKey + 1)}
+                disabled={calKey >= rangeMonthSpan.max}
+                aria-label="Next month"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+            <CalendarView
+              year={calYear}
+              month={calMonth}
+              transactions={transactions}
+              onDayClick={(key) => setDayDialogKey(key)}
+              minDay={fromDate}
+              maxDay={toDate}
+            />
+          </div>
+        ) : (
+          <CalendarView
+            year={year}
+            month={month}
+            transactions={transactions}
+            onDayClick={(key) => setDayDialogKey(key)}
+          />
+        )
+      ) : filterMode === "range" ? (
+        <RangeMonthlyView
+          from={fromDate}
+          to={toDate}
           transactions={transactions}
-          onDayClick={(key) => setDayDialogKey(key)}
         />
       ) : (
         <MonthlyView year={year} transactions={yearTx} />
@@ -680,6 +773,8 @@ export function FinanceTransactionsPage() {
         transactions={transactions}
         accountById={accountById}
         categoryById={categoryById}
+        categories={categories}
+        onInlineSave={handleInlineUpdate}
         onClose={() => setDayDialogKey(null)}
         onEdit={(t) => {
           setDayDialogKey(null);
@@ -783,7 +878,7 @@ function DayHeader({
   incomePaise: number;
   expensePaise: number;
 }) {
-  const d = new Date(day);
+  const d = parseYmd(day);
   const wd = WEEKDAY[d.getDay()];
   return (
     <div className="flex items-center justify-between px-5 py-3 border-b text-sm">
@@ -805,23 +900,46 @@ function DayHeader({
   );
 }
 
+/** Fields on a transaction row that support inline (in-place) editing. */
+type TxInlineField = "note" | "amount" | "category";
+
 function TxRow({
   tx,
   accountName,
   toAccountName,
   category,
   parentCategoryName,
+  categories,
   onEdit,
   onDelete,
+  onInlineSave,
 }: {
   tx: FinanceTransaction;
   accountName: string;
   toAccountName: string | null;
   category: FinanceCategory | null;
   parentCategoryName: string | null;
+  categories: FinanceCategory[];
   onEdit: () => void;
   onDelete: () => void;
+  onInlineSave: (
+    patch: Partial<
+      Pick<FinanceTransaction, "note" | "amount_paise" | "category_id">
+    >
+  ) => Promise<boolean>;
 }) {
+  // Inline editing: double-click on the note, amount, or category cell turns
+  // just that cell into an editor. Enter/blur saves (optimistically, with
+  // rollback handled by the parent), Escape cancels. The pencil button keeps
+  // opening the full dialog for everything else — and doubles as the mobile
+  // fallback, since touch devices don't double-click.
+  const [editField, setEditField] = useState<TxInlineField | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  // One commit per edit session — guards the Enter→blur double-fire and any
+  // change+blur overlap on the category select (double-submit guard).
+  const sessionRef = useRef(false);
+
   const amountClass =
     tx.kind === "income"
       ? "text-sky-500"
@@ -830,14 +948,149 @@ function TxRow({
       : "text-foreground";
   const subCatName =
     category && parentCategoryName !== category.name ? category.name : null;
+
+  // Category options for the inline select — kind-scoped, exactly like the
+  // full TransactionDialog picker. Transfers have no category.
+  const catParents = useMemo(
+    () =>
+      tx.kind === "transfer"
+        ? []
+        : categories
+            .filter(
+              (c) => !c.parent_id && !c.archived_at && c.kind === tx.kind
+            )
+            .sort((a, b) => a.position - b.position),
+    [categories, tx.kind]
+  );
+  const catChildren = useMemo(() => {
+    const m = new Map<string, FinanceCategory[]>();
+    for (const c of categories) {
+      if (!c.parent_id || c.archived_at) continue;
+      const arr = m.get(c.parent_id) ?? [];
+      arr.push(c);
+      m.set(c.parent_id, arr);
+    }
+    for (const arr of m.values()) arr.sort((a, b) => a.position - b.position);
+    return m;
+  }, [categories]);
+
+  function beginEdit(field: TxInlineField) {
+    if (saving || editField) return;
+    if (field === "category" && tx.kind === "transfer") return;
+    sessionRef.current = true;
+    setDraft(
+      field === "note"
+        ? tx.note ?? ""
+        : field === "amount"
+        ? String(paiseToRupees(tx.amount_paise))
+        : tx.category_id ?? ""
+    );
+    setEditField(field);
+  }
+
+  function cancelEdit() {
+    sessionRef.current = false;
+    setEditField(null);
+  }
+
+  async function commit(field: TxInlineField, value: string) {
+    if (!sessionRef.current) return;
+    sessionRef.current = false;
+    let patch: Partial<
+      Pick<FinanceTransaction, "note" | "amount_paise" | "category_id">
+    > | null = null;
+    if (field === "note") {
+      const trimmed = value.trim();
+      if (trimmed !== (tx.note ?? "").trim()) patch = { note: trimmed || null };
+    } else if (field === "amount") {
+      const paise = rupeesToPaise(value);
+      // Invalid or zero input → treat as cancel (nothing worth saving).
+      if (paise !== null && paise > 0 && paise !== tx.amount_paise) {
+        patch = { amount_paise: paise };
+      }
+    } else {
+      const cid = value || null;
+      if (cid !== tx.category_id) patch = { category_id: cid };
+    }
+    if (!patch) {
+      setEditField(null);
+      return;
+    }
+    setSaving(true);
+    await onInlineSave(patch); // parent handles rollback + error display
+    setSaving(false);
+    setEditField(null);
+  }
+
+  function editorKeyDown(
+    e: ReactKeyboardEvent<HTMLInputElement | HTMLSelectElement>,
+    field: TxInlineField,
+    value: string
+  ) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void commit(field, value);
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      cancelEdit();
+    }
+  }
+
+  const savingSpinner = (
+    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+  );
+
   return (
     <li className="grid grid-cols-[140px,140px,1fr,auto,auto] gap-3 px-5 py-3 items-center text-sm">
-      <div className="min-w-0">
-        <div className="text-xs text-muted-foreground truncate">
-          {parentCategoryName ?? (tx.kind === "transfer" ? "Transfer" : "—")}
-        </div>
-        {subCatName && (
-          <div className="text-sm font-medium truncate">{subCatName}</div>
+      <div
+        className="min-w-0"
+        title={
+          tx.kind !== "transfer" ? "Double-click to edit category" : undefined
+        }
+        onDoubleClick={() => beginEdit("category")}
+      >
+        {editField === "category" ? (
+          <span className="flex items-center gap-1">
+            <select
+              autoFocus
+              value={draft}
+              disabled={saving}
+              aria-label="Edit category"
+              onChange={(e) => {
+                setDraft(e.target.value);
+                void commit("category", e.target.value);
+              }}
+              onKeyDown={(e) => editorKeyDown(e, "category", draft)}
+              onBlur={(e) => void commit("category", e.target.value)}
+              className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-1 text-xs"
+            >
+              <option value="">— Uncategorised —</option>
+              {catParents.map((p) => {
+                const kids = catChildren.get(p.id) ?? [];
+                return (
+                  <optgroup key={p.id} label={p.name}>
+                    <option value={p.id}>{p.name}</option>
+                    {kids.map((k) => (
+                      <option key={k.id} value={k.id}>
+                        {"  ↳ "}
+                        {k.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+            </select>
+            {saving && savingSpinner}
+          </span>
+        ) : (
+          <>
+            <div className="text-xs text-muted-foreground truncate">
+              {parentCategoryName ?? (tx.kind === "transfer" ? "Transfer" : "—")}
+            </div>
+            {subCatName && (
+              <div className="text-sm font-medium truncate">{subCatName}</div>
+            )}
+          </>
         )}
       </div>
       <div className="min-w-0 text-xs text-muted-foreground truncate">
@@ -845,11 +1098,56 @@ function TxRow({
           ? `${accountName} → ${toAccountName}`
           : accountName}
       </div>
-      <div className="min-w-0 text-center font-medium truncate">
-        {tx.note?.trim() || (tx.kind === "transfer" ? "Transfer" : "—")}
+      <div
+        className="min-w-0 text-center font-medium"
+        title="Double-click to edit note"
+        onDoubleClick={() => beginEdit("note")}
+      >
+        {editField === "note" ? (
+          <span className="flex items-center gap-1">
+            <input
+              autoFocus
+              type="text"
+              value={draft}
+              disabled={saving}
+              aria-label="Edit note"
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => editorKeyDown(e, "note", draft)}
+              onBlur={(e) => void commit("note", e.target.value)}
+              className="h-8 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm"
+            />
+            {saving && savingSpinner}
+          </span>
+        ) : (
+          <span className="block truncate">
+            {tx.note?.trim() || (tx.kind === "transfer" ? "Transfer" : "—")}
+          </span>
+        )}
       </div>
-      <div className={cn("font-semibold whitespace-nowrap", amountClass)}>
-        {formatINR(tx.amount_paise)}
+      <div
+        className={cn("font-semibold whitespace-nowrap", amountClass)}
+        title="Double-click to edit amount"
+        onDoubleClick={() => beginEdit("amount")}
+      >
+        {editField === "amount" ? (
+          <span className="flex items-center gap-1">
+            <input
+              autoFocus
+              type="text"
+              inputMode="decimal"
+              value={draft}
+              disabled={saving}
+              aria-label="Edit amount (₹)"
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => editorKeyDown(e, "amount", draft)}
+              onBlur={(e) => void commit("amount", e.target.value)}
+              className="h-8 w-24 rounded-md border border-input bg-background px-2 text-right text-sm font-normal text-foreground"
+            />
+            {saving && savingSpinner}
+          </span>
+        ) : (
+          formatINR(tx.amount_paise)
+        )}
       </div>
       <div className="flex items-center gap-0.5">
         <button
@@ -999,7 +1297,7 @@ function DayDetailDialog({
 
   if (!dayKey) return null;
 
-  const d = new Date(dayKey);
+  const d = parseYmd(dayKey);
   const title = d.toLocaleDateString(undefined, {
     weekday: "long",
     day: "numeric",
@@ -1162,7 +1460,7 @@ function MonthlyView({
     const m: Array<{ income: number; expense: number; rows: FinanceTransaction[] }> =
       Array.from({ length: 12 }, () => ({ income: 0, expense: 0, rows: [] }));
     for (const t of transactions) {
-      const idx = new Date(t.occurred_on).getMonth();
+      const idx = parseYmd(t.occurred_on).getMonth();
       m[idx].rows.push(t);
       if (t.kind === "income") m[idx].income += t.amount_paise;
       else if (t.kind === "expense") m[idx].expense += t.amount_paise;

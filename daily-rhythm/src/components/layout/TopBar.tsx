@@ -2,6 +2,7 @@ import { useLocation } from "react-router-dom";
 import { Menu, Sun, Moon } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useTheme } from "@/hooks/useTheme";
+import { CommandPaletteTrigger } from "@/components/CommandPalette";
 
 const TITLES: Record<string, string> = {
   "/": "Home",
@@ -56,6 +57,7 @@ export function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       <h2 className="text-sm font-medium text-foreground truncate">{title}</h2>
 
       <div className="ml-auto flex items-center gap-2">
+        <CommandPaletteTrigger />
         <button
           type="button"
           onClick={() => setTheme(resolved === "dark" ? "light" : "dark")}

@@ -1,12 +1,15 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Building2,
   Code2,
   Download,
   ExternalLink,
   Filter,
   Flame,
   Loader2,
+  Pencil,
   Plus,
+  Search,
   Sparkles,
   Tag,
   Trash2,
@@ -23,27 +26,35 @@ import { Dialog } from "@/components/ui/Dialog";
 import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { SkeletonList } from "@/components/ui/Skeleton";
+import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { formatDate, formatRelative } from "@/lib/dates";
+import type { CodingProblemRow, LearnPhaseRow } from "@/types";
 import {
-  CodingProblem,
   DIFFICULTY_LABEL,
   Difficulty,
-  LearnPhase,
   LearnPhaseStage,
   PHASE_LABEL,
+  ProblemInput,
+  PhaseInput,
   ProblemStatus,
   STATUS_LABEL,
+  companyFrequencies,
   currentStreak,
+  deletePhase,
+  deleteProblem,
   fetchProblemMeta,
-  loadPhases,
-  loadProblems,
-  newId,
+  importFromLocalStorage,
+  insertPhase,
+  insertProblem,
+  listPhases,
+  listProblems,
   normaliseTags,
   parseProblemUrl,
-  savePhases,
-  saveProblems,
   tagFrequencies,
+  updateProblem,
 } from "@/lib/coding-tracker";
 
 /** Difficulty → badge variant. Easy / medium / hard intuitively map to the
@@ -74,9 +85,14 @@ function daysAgoYmd(days: number): string {
 }
 
 export function CodingTrackerPage() {
-  const [problems, setProblems] = useState<CodingProblem[]>([]);
-  const [phases, setPhases] = useState<LearnPhase[]>([]);
+  const { user } = useAuth();
+  const [problems, setProblems] = useState<CodingProblemRow[]>([]);
+  const [phases, setPhases] = useState<LearnPhaseRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [importNote, setImportNote] = useState<string | null>(null);
   const [problemDialogOpen, setProblemDialogOpen] = useState(false);
+  const [editingProblem, setEditingProblem] = useState<CodingProblemRow | null>(null);
   const [phaseDialogOpen, setPhaseDialogOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<
     | { kind: "problem"; id: string; label: string }
@@ -85,14 +101,52 @@ export function CodingTrackerPage() {
   >(null);
 
   // Filter state
+  const [search, setSearch] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [activeCompany, setActiveCompany] = useState<string | null>(null);
   const [difficultyFilter, setDifficultyFilter] = useState<Difficulty | "">("");
   const [statusFilter, setStatusFilter] = useState<ProblemStatus | "">("");
 
   useEffect(() => {
-    setProblems(loadProblems());
-    setPhases(loadPhases());
-  }, []);
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      // One-time migration of legacy browser-local data. Idempotent — a
+      // failure leaves the localStorage keys in place for the next visit.
+      try {
+        const imported = await importFromLocalStorage(supabase, user.id);
+        if (!cancelled && (imported.problems > 0 || imported.phases > 0)) {
+          const parts: string[] = [];
+          if (imported.problems > 0) {
+            parts.push(`${imported.problems} problem${imported.problems === 1 ? "" : "s"}`);
+          }
+          if (imported.phases > 0) {
+            parts.push(`${imported.phases} phase${imported.phases === 1 ? "" : "s"}`);
+          }
+          setImportNote(`Imported ${parts.join(" and ")} from this browser.`);
+        }
+      } catch {
+        // Non-fatal: server data still loads; import retries next visit.
+      }
+      try {
+        const [p, ph] = await Promise.all([
+          listProblems(supabase, user.id),
+          listPhases(supabase, user.id),
+        ]);
+        if (cancelled) return;
+        setProblems(p);
+        setPhases(ph);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   /* ────────────────────────── derived data ────────────────────────── */
 
@@ -101,15 +155,34 @@ export function CodingTrackerPage() {
     () => [...tagFreq.entries()].sort((a, b) => b[1] - a[1]),
     [tagFreq],
   );
+  const sortedCompanies = useMemo(
+    () => [...companyFrequencies(problems).entries()].sort((a, b) => b[1] - a[1]),
+    [problems],
+  );
 
   const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
     return problems.filter((p) => {
       if (activeTag && !p.tags.includes(activeTag)) return false;
+      if (activeCompany && !(p.companies ?? []).includes(activeCompany)) return false;
       if (difficultyFilter && p.difficulty !== difficultyFilter) return false;
       if (statusFilter && p.status !== statusFilter) return false;
+      if (q) {
+        const haystack = [
+          p.title,
+          p.url,
+          p.platform,
+          ...p.tags,
+          ...(p.companies ?? []),
+          p.notes ?? "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
       return true;
     });
-  }, [problems, activeTag, difficultyFilter, statusFilter]);
+  }, [problems, search, activeTag, activeCompany, difficultyFilter, statusFilter]);
 
   const solvedThisWeek = useMemo(() => {
     const cutoff = daysAgoYmd(6);
@@ -120,43 +193,52 @@ export function CodingTrackerPage() {
 
   /* ───────────────────────── mutators ─────────────────────────────── */
 
-  function persistProblems(next: CodingProblem[]) {
-    setProblems(next);
-    saveProblems(next);
-  }
-  function persistPhases(next: LearnPhase[]) {
-    setPhases(next);
-    savePhases(next);
-  }
-
-  function addProblem(input: Omit<CodingProblem, "id" | "created_at">) {
-    persistProblems([
-      { ...input, id: newId(), created_at: new Date().toISOString() },
-      ...problems,
-    ]);
-  }
-
-  function addPhase(input: Omit<LearnPhase, "id" | "created_at">) {
-    persistPhases([
-      { ...input, id: newId(), created_at: new Date().toISOString() },
-      ...phases,
-    ]);
-  }
-
-  function confirmDelete() {
-    if (!pendingDelete) return;
-    if (pendingDelete.kind === "problem") {
-      persistProblems(problems.filter((p) => p.id !== pendingDelete.id));
+  async function saveProblem(input: ProblemInput) {
+    if (!user) throw new Error("Not signed in.");
+    if (editingProblem) {
+      const row = await updateProblem(supabase, editingProblem.id, input);
+      setProblems((cur) => cur.map((p) => (p.id === row.id ? row : p)));
     } else {
-      persistPhases(phases.filter((p) => p.id !== pendingDelete.id));
+      const row = await insertProblem(supabase, user.id, input);
+      setProblems((cur) => [row, ...cur]);
     }
+    setProblemDialogOpen(false);
+    setEditingProblem(null);
+  }
+
+  async function addPhase(input: PhaseInput) {
+    if (!user) throw new Error("Not signed in.");
+    const row = await insertPhase(supabase, user.id, input);
+    setPhases((cur) => [row, ...cur]);
+    setPhaseDialogOpen(false);
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    const pd = pendingDelete;
     setPendingDelete(null);
+    setError(null);
+    try {
+      if (pd.kind === "problem") {
+        await deleteProblem(supabase, pd.id);
+        setProblems((cur) => cur.filter((p) => p.id !== pd.id));
+      } else {
+        await deletePhase(supabase, pd.id);
+        setPhases((cur) => cur.filter((p) => p.id !== pd.id));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   /* ─────────────────────────── render ─────────────────────────────── */
 
   const hasActiveFilters =
-    activeTag !== null || difficultyFilter !== "" || statusFilter !== "";
+    search.trim() !== "" ||
+    activeTag !== null ||
+    activeCompany !== null ||
+    difficultyFilter !== "" ||
+    statusFilter !== "";
 
   return (
     <div className="space-y-6">
@@ -165,12 +247,24 @@ export function CodingTrackerPage() {
         description="Log problems, group by tag, and track your software-dev learn phases."
         icon={<Code2 className="h-5 w-5" />}
         actions={
-          <Button onClick={() => setProblemDialogOpen(true)}>
+          <Button onClick={() => { setEditingProblem(null); setProblemDialogOpen(true); }} disabled={loading}>
             <Plus className="h-4 w-4" />
             Add problem
           </Button>
         }
       />
+
+      {importNote && (
+        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-600 dark:text-emerald-400">
+          {importNote}
+        </div>
+      )}
+
+      {error && (
+        <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       {/* Summary grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -213,7 +307,9 @@ export function CodingTrackerPage() {
                 variant="ghost"
                 size="sm"
                 onClick={() => {
+                  setSearch("");
                   setActiveTag(null);
+                  setActiveCompany(null);
                   setDifficultyFilter("");
                   setStatusFilter("");
                 }}
@@ -226,6 +322,16 @@ export function CodingTrackerPage() {
         <CardContent className="space-y-4">
           {/* Filter row */}
           <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[180px] sm:max-w-xs">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                aria-label="Search problems"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search title, url, tags, companies…"
+                className="h-8 pl-8 text-xs"
+              />
+            </div>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <Filter className="h-3.5 w-3.5" />
               Filter:
@@ -287,8 +393,43 @@ export function CodingTrackerPage() {
             </div>
           )}
 
+          {/* Company chips — e.g. click "amazon" then set difficulty Medium
+              to see Amazon-tagged mediums. */}
+          {sortedCompanies.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Building2 className="h-3.5 w-3.5" />
+                Companies:
+              </span>
+              {sortedCompanies.map(([company, count]) => {
+                const active = activeCompany === company;
+                return (
+                  <button
+                    key={company}
+                    type="button"
+                    onClick={() => setActiveCompany(active ? null : company)}
+                    aria-pressed={active}
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 transition-colors",
+                      active
+                        ? "bg-sky-500 text-white ring-sky-500"
+                        : "bg-sky-500/10 text-sky-600 dark:text-sky-400 ring-sky-500/30 hover:bg-sky-500/20",
+                    )}
+                  >
+                    {company}
+                    <span className={cn("text-[10px] tabular-nums", active ? "opacity-80" : "opacity-70")}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {/* List */}
-          {filtered.length === 0 ? (
+          {loading ? (
+            <SkeletonList rows={3} />
+          ) : filtered.length === 0 ? (
             <EmptyState
               bare
               icon={<Code2 className="h-6 w-6" />}
@@ -296,11 +437,11 @@ export function CodingTrackerPage() {
               description={
                 problems.length === 0
                   ? "Paste a problem link from LeetCode, HackerRank, Codeforces, GeeksforGeeks and more — the platform is auto-detected."
-                  : "Try clearing a filter or removing the tag selection."
+                  : "Try clearing the search or removing a filter."
               }
               action={
                 problems.length === 0 && (
-                  <Button onClick={() => setProblemDialogOpen(true)}>
+                  <Button onClick={() => { setEditingProblem(null); setProblemDialogOpen(true); }}>
                     <Plus className="h-4 w-4" />
                     Add your first problem
                   </Button>
@@ -333,7 +474,7 @@ export function CodingTrackerPage() {
                         {STATUS_LABEL[p.status]}
                       </Badge>
                     </div>
-                    {p.tags.length > 0 && (
+                    {(p.tags.length > 0 || (p.companies ?? []).length > 0) && (
                       <div className="flex flex-wrap gap-1">
                         {p.tags.map((t) => (
                           <span
@@ -341,6 +482,15 @@ export function CodingTrackerPage() {
                             className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground"
                           >
                             {t}
+                          </span>
+                        ))}
+                        {(p.companies ?? []).map((c) => (
+                          <span
+                            key={c}
+                            className="inline-flex items-center gap-0.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-600 dark:text-sky-400"
+                          >
+                            <Building2 className="h-2.5 w-2.5" />
+                            {c}
                           </span>
                         ))}
                       </div>
@@ -354,6 +504,17 @@ export function CodingTrackerPage() {
                       {p.notes && <span className="ml-2 italic">· {p.notes}</span>}
                     </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingProblem(p);
+                      setProblemDialogOpen(true);
+                    }}
+                    aria-label="Edit problem"
+                    className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
                   <button
                     type="button"
                     onClick={() =>
@@ -381,14 +542,16 @@ export function CodingTrackerPage() {
                 Track structured upskilling topics through learning → mastered.
               </CardDescription>
             </div>
-            <Button variant="outline" size="sm" onClick={() => setPhaseDialogOpen(true)}>
+            <Button variant="outline" size="sm" onClick={() => setPhaseDialogOpen(true)} disabled={loading}>
               <Plus className="h-4 w-4" />
               Add phase
             </Button>
           </div>
         </CardHeader>
         <CardContent>
-          {phases.length === 0 ? (
+          {loading ? (
+            <SkeletonList rows={2} />
+          ) : phases.length === 0 ? (
             <EmptyState
               bare
               icon={<Sparkles className="h-6 w-6" />}
@@ -434,22 +597,20 @@ export function CodingTrackerPage() {
         </CardContent>
       </Card>
 
-      <AddProblemDialog
+      <ProblemDialog
         open={problemDialogOpen}
-        onClose={() => setProblemDialogOpen(false)}
-        onSave={(input) => {
-          addProblem(input);
+        editing={editingProblem}
+        onClose={() => {
           setProblemDialogOpen(false);
+          setEditingProblem(null);
         }}
+        onSave={saveProblem}
       />
 
       <AddPhaseDialog
         open={phaseDialogOpen}
         onClose={() => setPhaseDialogOpen(false)}
-        onSave={(input) => {
-          addPhase(input);
-          setPhaseDialogOpen(false);
-        }}
+        onSave={addPhase}
       />
 
       <ConfirmDialog
@@ -492,16 +653,18 @@ function SummaryStat({
   );
 }
 
-/* ─────────────────────────── add problem ──────────────────────────── */
+/* ───────────────────────── add / edit problem ─────────────────────── */
 
-function AddProblemDialog({
+function ProblemDialog({
   open,
+  editing,
   onClose,
   onSave,
 }: {
   open: boolean;
+  editing: CodingProblemRow | null;
   onClose: () => void;
-  onSave: (input: Omit<CodingProblem, "id" | "created_at">) => void;
+  onSave: (input: ProblemInput) => Promise<void>;
 }) {
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
@@ -509,42 +672,77 @@ function AddProblemDialog({
   const [difficulty, setDifficulty] = useState<Difficulty>("medium");
   const [status, setStatus] = useState<ProblemStatus>("todo");
   const [tagInput, setTagInput] = useState("");
+  const [companyInput, setCompanyInput] = useState("");
   const [solvedOn, setSolvedOn] = useState("");
   const [notes, setNotes] = useState("");
   const [titleTouched, setTitleTouched] = useState(false);
   const [tagsTouched, setTagsTouched] = useState(false);
   const [diffTouched, setDiffTouched] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   /** "idle" before any fetch, "loading" while the proxy call is in flight,
    *  "ok" after a successful merge, "empty" when the proxy returned but no
    *  fields were recognisable, "error" on network failure. */
   const [fetchState, setFetchState] = useState<"idle" | "loading" | "ok" | "empty" | "error">("idle");
   const [fetchMsg, setFetchMsg] = useState<string>("");
+  // Bumped whenever an in-flight fetch's result must be discarded (dialog
+  // closed, URL edited, newer fetch fired) — a late response for a stale
+  // token must not fill the form.
+  const fetchToken = useRef(0);
 
   useEffect(() => {
+    if (open && editing) {
+      // Hydrate from the row being edited. Mark fields as touched so URL
+      // re-parsing / fetch-details can't stomp the stored values.
+      setUrl(editing.url);
+      setTitle(editing.title);
+      setPlatform(editing.platform);
+      setDifficulty(editing.difficulty);
+      setStatus(editing.status);
+      setTagInput(editing.tags.join(", "));
+      setCompanyInput((editing.companies ?? []).join(", "));
+      setSolvedOn(editing.solved_on ?? "");
+      setNotes(editing.notes ?? "");
+      setTitleTouched(true);
+      setTagsTouched(true);
+      setDiffTouched(true);
+      setSaving(false);
+      setSaveError(null);
+      setFetchState("idle");
+      setFetchMsg("");
+      return;
+    }
     if (!open) {
+      fetchToken.current += 1;
       setUrl("");
       setTitle("");
       setPlatform("");
       setDifficulty("medium");
       setStatus("todo");
       setTagInput("");
+      setCompanyInput("");
       setSolvedOn("");
       setNotes("");
       setTitleTouched(false);
       setTagsTouched(false);
       setDiffTouched(false);
+      setSaving(false);
+      setSaveError(null);
       setFetchState("idle");
       setFetchMsg("");
     }
-  }, [open]);
+  }, [open, editing]);
 
   /** Fire the proxy fetch and merge whatever fields it returns — but never
    *  stomp values the user has already typed (the *Touched flags). */
   async function onFetchDetails() {
     if (!url.trim() || fetchState === "loading") return;
+    const token = ++fetchToken.current;
     setFetchState("loading");
     setFetchMsg("");
     const meta = await fetchProblemMeta(url);
+    // Stale: dialog closed or URL changed while the request was in flight.
+    if (token !== fetchToken.current) return;
     let filled = 0;
     if (meta.title && !titleTouched) {
       setTitle(meta.title);
@@ -580,30 +778,44 @@ function AddProblemDialog({
     const parsed = parseProblemUrl(next);
     setPlatform(parsed.platform);
     if (!titleTouched) setTitle(parsed.titleGuess);
-    // Editing the URL invalidates the previous fetch result.
-    if (fetchState !== "idle" && fetchState !== "loading") {
-      setFetchState("idle");
-      setFetchMsg("");
+    // Editing the URL invalidates the previous fetch result — including one
+    // still in flight, whose response would belong to the old URL.
+    fetchToken.current += 1;
+    setFetchState("idle");
+    setFetchMsg("");
+  }
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!url.trim() || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave({
+        url: url.trim(),
+        title: title.trim() || url.trim(),
+        platform: platform.trim(),
+        difficulty,
+        status,
+        tags: normaliseTags(tagInput),
+        companies: normaliseTags(companyInput),
+        solved_on: status === "solved" ? (solvedOn || todayYmd()) : null,
+        notes: notes.trim() || null,
+      });
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
     }
   }
 
-  function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!url.trim()) return;
-    onSave({
-      url: url.trim(),
-      title: title.trim() || url.trim(),
-      platform: platform.trim(),
-      difficulty,
-      status,
-      tags: normaliseTags(tagInput),
-      solved_on: status === "solved" ? (solvedOn || todayYmd()) : null,
-      notes: notes.trim() || null,
-    });
-  }
-
   return (
-    <Dialog open={open} onClose={onClose} title="Add problem" description="Track a coding problem with tags for grouping and filtering.">
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={editing ? "Edit problem" : "Add problem"}
+      description="Track a coding problem with tags and companies for grouping and filtering."
+    >
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="space-y-1.5">
           <Label htmlFor="p-url">Problem URL</Label>
@@ -712,6 +924,18 @@ function AddProblemDialog({
           />
           <p className="text-[11px] text-muted-foreground">Comma-separated. Used to group and filter problems.</p>
         </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="p-companies">Companies</Label>
+          <Input
+            id="p-companies"
+            value={companyInput}
+            onChange={(e) => setCompanyInput(e.target.value)}
+            placeholder="amazon, google, zoho"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Comma-separated target companies — filter e.g. Amazon-tagged mediums.
+          </p>
+        </div>
         {status === "solved" && (
           <div className="space-y-1.5">
             <Label htmlFor="p-solved-on">Solved on</Label>
@@ -733,9 +957,18 @@ function AddProblemDialog({
             rows={2}
           />
         </div>
+        {saveError && (
+          <p role="alert" className="text-sm text-destructive">
+            {saveError}
+          </p>
+        )}
         <div className="flex justify-end gap-2 pt-2">
-          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit">Save problem</Button>
+          <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? "Saving…" : editing ? "Save changes" : "Save problem"}
+          </Button>
         </div>
       </form>
     </Dialog>
@@ -751,13 +984,15 @@ function AddPhaseDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  onSave: (input: Omit<LearnPhase, "id" | "created_at">) => void;
+  onSave: (input: PhaseInput) => Promise<void>;
 }) {
   const [topic, setTopic] = useState("");
   const [stage, setStage] = useState<LearnPhaseStage>("learning");
   const [startedOn, setStartedOn] = useState(todayYmd());
   const [completedOn, setCompletedOn] = useState("");
   const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -766,20 +1001,30 @@ function AddPhaseDialog({
       setStartedOn(todayYmd());
       setCompletedOn("");
       setNotes("");
+      setSaving(false);
+      setSaveError(null);
     }
   }, [open]);
 
-  function onSubmit(e: FormEvent) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
     const t = topic.trim();
-    if (!t) return;
-    onSave({
-      topic: t,
-      stage,
-      started_on: startedOn || todayYmd(),
-      completed_on: stage === "mastered" ? (completedOn || todayYmd()) : (completedOn || null),
-      notes: notes.trim() || null,
-    });
+    if (!t || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave({
+        topic: t,
+        stage,
+        started_on: startedOn || todayYmd(),
+        completed_on: stage === "mastered" ? (completedOn || todayYmd()) : (completedOn || null),
+        notes: notes.trim() || null,
+      });
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -837,9 +1082,18 @@ function AddPhaseDialog({
             rows={2}
           />
         </div>
+        {saveError && (
+          <p role="alert" className="text-sm text-destructive">
+            {saveError}
+          </p>
+        )}
         <div className="flex justify-end gap-2 pt-2">
-          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit">Save phase</Button>
+          <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? "Saving…" : "Save phase"}
+          </Button>
         </div>
       </form>
     </Dialog>

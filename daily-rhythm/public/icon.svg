@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DailyWork">
+  <!-- Rounded app tile in the app's violet primary -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#7c3aed"/>
+  <!-- Activity / pulse glyph -->
+  <path d="M96 268h84l40-108 72 200 44-124h80"
+        fill="none" stroke="#ffffff" stroke-width="36"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -34,12 +34,21 @@ const STMT_RULES = [
   {
     id: "delete-no-where",
     why: "DELETE without WHERE wipes the entire table.",
-    match: (s) => /\bdelete\s+from\b/i.test(s) && !/\bwhere\b/i.test(s),
+    // Only a WHERE *after* `delete from` counts — a WHERE inside a leading
+    // CTE must not satisfy the check.
+    match: (s) => {
+      const m = /\bdelete\s+from\b/i.exec(s);
+      return m !== null && !/\bwhere\b/i.test(s.slice(m.index));
+    },
   },
   {
     id: "update-no-where",
     why: "UPDATE without WHERE rewrites every row.",
-    match: (s) => /\bupdate\s+\S+\s+set\b/i.test(s) && !/\bwhere\b/i.test(s),
+    // Handles `update only t set`, `update t as a set`, `update t a set`.
+    match: (s) => {
+      const m = /\bupdate\s+(?:only\s+)?"?[\w.]+"?(?:\s+(?:as\s+)?"?\w+"?)?\s+set\b/i.exec(s);
+      return m !== null && !/\bwhere\b/i.test(s.slice(m.index));
+    },
   },
 ];
 

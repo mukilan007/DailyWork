@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DailyWork">
+  <!-- Full-bleed background: maskable icons get cropped to the platform's
+       shape, so the fill must cover the entire canvas and the glyph must sit
+       inside the central ~80% safe zone. -->
+  <rect width="512" height="512" fill="#7c3aed"/>
+  <!-- Activity / pulse glyph, inset within the safe zone -->
+  <path d="M124 268h72l36-96 64 176 40-110h72"
+        fill="none" stroke="#ffffff" stroke-width="34"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

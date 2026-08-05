@@ -262,26 +262,82 @@ async function preprocessImageForOcr(file: File): Promise<Blob | File> {
 /** Tesseract reliably mis-OCRs the ₹ glyph as a leading digit (typically 2,
  *  3, or 7) attached to the amount with no separating space. The result is
  *  amounts inflated by an order of magnitude or more — `₹ 10,002.40` becomes
- *  `710,002.40`. We post-process the OCR text to strip the stray digit, but
- *  only in the unambiguous "Western 3-3 comma grouping" case, where the
- *  result can't be mistaken for a valid Indian amount.
+ *  `710,002.40`. We post-process the OCR text in two passes: first normalise
+ *  "Rs"-like renderings of ₹ (including the digit+`s` misreads "2s"/"3s"/
+ *  "7s") to a literal `₹ `, then strip a stray lead digit stuck to the
+ *  amount — but only when the shape makes the strip unambiguous.
  *
  *  We previously also tried to strip a stray digit from no-comma amounts
  *  ("3305.00" → "305.00"), but the same shape is indistinguishable from a
  *  legit "799.00", causing a worse regression (₹799 → ₹99). For no-comma
- *  amounts we now leave the parser alone and rely on the user to fix the
+ *  amounts we still leave the parser alone and rely on the user to fix the
  *  occasional off-by-one digit in the review table — these are visually
  *  obvious (₹3305 stands out from neighbouring ₹100s amounts).
  *
- *  Indian grouping is `D,DD,DDD.DD` (lakh segment = 2 digits). When we see
- *  `DDD,DDD.DD` (Western 3-3 grouping), that's nearly always a misread
- *  `<₹><1-2 digit lakh>,<3-digit thousand>.dd`. The negative lookbehind
- *  blocks the case where ₹ was OCR'd correctly. */
+ *  Shapes we strip (Indian grouping is `D,DD,DDD.DD`; lakh segments = 2
+ *  digits, only the final thousands segment has 3):
+ *   - Case A: `DDD,DDD.DD` / `DDDD,DDD.DD`… (Western 3-3 grouping). Nearly
+ *     always a misread `<₹><1-2 digit>,<3-digit thousand>.dd`. Trade-off:
+ *     a genuinely Western-formatted OCR line (some bank apps do print
+ *     `150,000.00`) loses its lead digit — accepted because Indian
+ *     statements overwhelmingly use lakh grouping, and the review table
+ *     shows the raw line for manual fix-up.
+ *   - Case B: `DDD,DD,…,DDD.DD` — a 3-digit head followed by a 2-digit
+ *     lakh segment. Valid in *no* grouping scheme, while the stripped
+ *     remainder (`DD,DD,…,DDD.DD`) is proper Indian grouping, so the strip
+ *     is unambiguous ("231,50,000.00" → "31,50,000.00").
+ *
+ *  Shapes we deliberately do NOT touch, even though they *could* carry a
+ *  stray digit:
+ *   - `DD,DDD.DD` ("31,234.56"): both the token and its stripped remainder
+ *     ("1,234.56") are valid Indian amounts — ambiguous, so hands off.
+ *   - `DD,DD,DDD.DD` ("71,23,456.78"): same story at lakh scale.
+ *   - Anything directly preceded by a correctly-OCR'd ₹: if the glyph
+ *     rendered, the lead digit is part of the amount. We also considered
+ *     using a correctly-OCR'd ₹ *elsewhere on the line* as a signal to
+ *     strip the ambiguous shapes above, but rejected it: one glyph
+ *     rendering doesn't imply the neighbouring one failed, and the false-
+ *     positive cost (corrupting a legit ₹31,234.56) outweighs the win. */
 function fixOcrCurrencyMisreads(text: string): string {
-  return text.replace(
-    /(?<!₹\s?)(?<![\d.,])(\d)(\d{2,3},\d{3}(?:,\d{3})*\.\d{2})(?!\d)/g,
+  // Pass 1 — currency-marker normalisation. OCR sometimes renders ₹ as an
+  // "Rs"-like token: literal "Rs"/"rs" (₹ *is* the rupee sign), or a digit
+  // plus "s" ("2s"/"3s"/"7s" — the stem reads as a digit, the hook as s).
+  // Left alone these don't corrupt the parsed value (the "s" separates the
+  // stray digit from the amount), but pass 2 would then see a bare
+  // Western-grouped amount ("2s150,000.00" → "150,000.00") and strip its
+  // *real* lead digit. Normalising to "₹ " both cleans the text and arms
+  // pass 2's ₹ lookbehind guard. Conservative on purpose:
+  //  - digit+s is restricted to 2/3/7 (the digits Tesseract confuses ₹
+  //    with) so narration tokens like "6s" are never rewritten;
+  //  - `(?<![A-Za-z0-9₹])` keeps word endings ("Stores 99.00") intact;
+  //  - only fires when a well-formed `xx.xx` amount follows immediately.
+  let out = text.replace(
+    /(?<![A-Za-z0-9₹])(?:[Rr][sS]\.?|[237][sS])\s?(?=(?:\d{1,3}(?:,\d{2,3})+|\d+)\.\d{2})/g,
+    "₹ "
+  );
+
+  // Pass 2 — strip the stray lead digit. Shared guards on both cases:
+  //  - `(?<!₹\s?)`: the ₹ rendered correctly, so the digit is real;
+  //  - `(?<![\d.,])`: don't start mid-number;
+  //  - `(?=[1-9])`: if stripping would leave an amount starting with 0
+  //    (e.g. "100,000.00" → "00,000.00"), it can't have been a misread ₹ —
+  //    no real amount starts with 0 — so leave it alone. Without this, a
+  //    legit ₹1,00,000.00 parses to zero and the row is silently dropped
+  //    before review.
+  // Case A: remainder is Western 3-3 grouping.
+  out = out.replace(
+    /(?<!₹\s?)(?<![\d.,])(\d)(?=[1-9])(\d{2,3},\d{3}(?:,\d{3})*\.\d{2})(?!\d)/g,
     "$2"
   );
+  // Case B: remainder is Indian grouping with a 2-digit head + 2-digit lakh
+  // segments; the unstripped token (3-digit head before a 2-digit segment)
+  // is invalid in every scheme. A 1-digit remainder head is NOT stripped —
+  // "71,23,456.78" is itself a valid Indian amount (see comment above).
+  out = out.replace(
+    /(?<!₹\s?)(?<![\d.,])(\d)(?=[1-9])(\d{2}(?:,\d{2})+,\d{3}\.\d{2})(?!\d)/g,
+    "$2"
+  );
+  return out;
 }
 
 /** Minimal RFC-4180-ish CSV → space-joined text. Handles quoted fields and
@@ -402,7 +458,12 @@ const MONTHS: Record<string, number> = {
 };
 
 function normaliseYMD(year: number, month: number, day: number): string | null {
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  if (month < 1 || month > 12 || day < 1) return null;
+  // Real calendar check — "31/02" from an OCR misread must not produce
+  // "2026-02-31", which Postgres rejects and which fails the whole insert
+  // chunk at import time.
+  const daysInMonth = new Date(year, month, 0).getDate();
+  if (day > daysInMonth) return null;
   const y = String(year).padStart(4, "0");
   const m = String(month).padStart(2, "0");
   const d = String(day).padStart(2, "0");

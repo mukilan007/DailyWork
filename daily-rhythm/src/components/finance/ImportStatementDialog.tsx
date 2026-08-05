@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileUp,
   Loader2,
@@ -370,6 +370,28 @@ export function ImportStatementDialog({
     setRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   }
 
+  // Account created by a previous Import attempt in this dialog session.
+  // If row insertion fails after the account was created, a retry must reuse
+  // it — calling createAccount again throws "already exists" and deadlocks
+  // the import.
+  const createdAccount = useRef<{ name: string; id: string } | null>(null);
+
+  /** Guarded close: a half-reviewed import (possibly 200 hand-fixed rows)
+   *  must not be lost to a stray keypress. Outside clicks are disabled
+   *  entirely via the Dialog's `disableOutsideClose`; Escape / the X button
+   *  / Cancel land here and require an explicit confirm while parsed rows
+   *  are pending review. A successful import calls `onClose` directly. */
+  function requestClose() {
+    if (importing) return;
+    if (stage === "review" && rows.length > 0) {
+      const ok = window.confirm(
+        `Discard ${rows.length} parsed row${rows.length === 1 ? "" : "s"} without importing?`
+      );
+      if (!ok) return;
+    }
+    onClose();
+  }
+
   async function handleImport() {
     if (selectedCount === 0) return;
     if (accountMode === "existing" && !accountId) return;
@@ -383,11 +405,17 @@ export function ImportStatementDialog({
       // Create the new account first so we have an id to attach to every row.
       let targetAccountId = accountId;
       if (accountMode === "new") {
-        const created = await createAccount({
-          name: newAccountName.trim(),
-          account_type: newAccountType,
-        });
-        targetAccountId = created.id;
+        const name = newAccountName.trim();
+        if (createdAccount.current?.name === name) {
+          targetAccountId = createdAccount.current.id;
+        } else {
+          const created = await createAccount({
+            name,
+            account_type: newAccountType,
+          });
+          createdAccount.current = { name, id: created.id };
+          targetAccountId = created.id;
+        }
       }
       const payload = rows
         .filter((r) => r.selected && r.amount_paise > 0)
@@ -442,12 +470,11 @@ export function ImportStatementDialog({
   return (
     <Dialog
       open={open}
-      onClose={() => {
-        if (!importing) onClose();
-      }}
+      onClose={requestClose}
       title="Import bank statement"
       description="Upload a PDF and review the parsed transactions before importing."
       className="max-w-4xl"
+      disableOutsideClose
     >
       {error && (
         <div
@@ -616,7 +643,7 @@ export function ImportStatementDialog({
           />
 
           <div className="flex justify-end gap-2 pt-2">
-            <Button variant="ghost" onClick={onClose}>
+            <Button variant="ghost" onClick={requestClose}>
               Cancel
             </Button>
           </div>
@@ -811,7 +838,7 @@ export function ImportStatementDialog({
               deselected by default.
             </p>
             <div className="flex items-center gap-2">
-              <Button variant="ghost" onClick={onClose} disabled={importing}>
+              <Button variant="ghost" onClick={requestClose} disabled={importing}>
                 Cancel
               </Button>
               <Button

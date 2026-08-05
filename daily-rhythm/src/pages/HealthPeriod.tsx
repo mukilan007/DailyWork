@@ -1422,13 +1422,13 @@ function PeriodRangeDialog({
           {invalid
             ? "End date must be on or after the start date."
             : tooLong
-            ? `That's ${dayCount} days — periods this long are unusual. Double-check the range before saving.`
+            ? `That's ${dayCount} days — periods this long are unusual. Shorten the range to 14 days or fewer to save.`
             : `Will mark ${dayCount} day${dayCount === 1 ? "" : "s"} as period.`}
         </div>
 
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit" disabled={saving || invalid}>
+          <Button type="submit" disabled={saving || invalid || tooLong}>
             {saving ? "Saving…" : `Mark ${dayCount || ""} day${dayCount === 1 ? "" : "s"}`.trim()}
           </Button>
         </div>
@@ -1609,7 +1609,9 @@ export function computeCycleInsights(logs: PeriodLog[]): {
   const periodSet = new Set(periodDates);
   const firstDays: string[] = [];
   for (const d of periodDates) {
-    const prev = new Date(d);
+    // Parse as local midnight — `new Date("YYYY-MM-DD")` is UTC midnight and
+    // shifts the day in negative-UTC timezones, breaking first-day detection.
+    const prev = new Date(`${d}T00:00:00`);
     prev.setDate(prev.getDate() - 1);
     if (!periodSet.has(ymd(prev))) firstDays.push(d);
   }

@@ -7,6 +7,8 @@ import {
   AlertTriangle,
   Trash2,
   Database,
+  Download,
+  FileDown,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
@@ -25,6 +27,13 @@ import {
   PASSWORD_MIN_LENGTH,
   validatePasswordStrength,
 } from "@/lib/passwordHash";
+import {
+  EXPORT_TABLES,
+  exportAllData,
+  exportTableCsv,
+  fetchUserTable,
+  type ExportTable,
+} from "@/lib/export-all";
 import { cn } from "@/lib/utils";
 
 const DELETE_CONFIRM_PHRASE = "delete my account";
@@ -66,6 +75,11 @@ export function SettingsProfilePage() {
   const [retentionAvailable, setRetentionAvailable] = useState(true);
   const [savingRetention, setSavingRetention] = useState(false);
   const [retentionMsg, setRetentionMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportMsg, setExportMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [csvTable, setCsvTable] = useState<ExportTable>("todos");
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [csvMsg, setCsvMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -291,6 +305,54 @@ export function SettingsProfilePage() {
     );
   }
 
+  async function downloadFullBackup() {
+    if (!user) return;
+    setExporting(true);
+    setExportMsg(null);
+    try {
+      const { counts, total, errors } = await exportAllData(supabase, user.id);
+      const nonEmpty = Object.entries(counts).filter(([, n]) => n > 0);
+      const summary =
+        nonEmpty.length === 0
+          ? "Backup downloaded (no rows yet)."
+          : `Backup downloaded — ${total} rows across ${nonEmpty.length} tables (` +
+            nonEmpty
+              .slice(0, 5)
+              .map(([t, n]) => `${t}: ${n}`)
+              .join(", ") +
+            (nonEmpty.length > 5 ? ", …" : "") +
+            ")." ;
+      const failed = Object.keys(errors);
+      setExportMsg({
+        kind: failed.length > 0 ? "error" : "success",
+        text:
+          failed.length > 0
+            ? `${summary} Skipped ${failed.length} table(s): ${failed.join(", ")}.`
+            : summary,
+      });
+    } catch (e) {
+      setExportMsg({
+        kind: "error",
+        text: e instanceof Error ? e.message : "Export failed.",
+      });
+    }
+    setExporting(false);
+  }
+
+  async function downloadTableCsv() {
+    if (!user) return;
+    setCsvBusy(true);
+    setCsvMsg(null);
+    try {
+      const rows = await fetchUserTable(supabase, csvTable, user.id);
+      exportTableCsv(csvTable, rows);
+      setCsvMsg({ kind: "success", text: `${csvTable}.csv downloaded (${rows.length} rows).` });
+    } catch (e) {
+      setCsvMsg({ kind: "error", text: e instanceof Error ? e.message : "CSV export failed." });
+    }
+    setCsvBusy(false);
+  }
+
   function openDeleteDialog() {
     setDeleteConfirm("");
     setDeleteError(null);
@@ -426,7 +488,7 @@ export function SettingsProfilePage() {
           ) : (
             <form onSubmit={verifyCodeAndUpdate} className="space-y-4">
               <div className="rounded-md border border-input bg-muted/30 p-3 text-xs text-muted-foreground">
-                We emailed an 8-digit code to <span className="font-medium text-foreground">{user?.email}</span>.
+                We emailed a 6-digit code to <span className="font-medium text-foreground">{user?.email}</span>.
                 Enter it below with your new password. The code expires in 1 hour.
               </div>
 
@@ -438,7 +500,7 @@ export function SettingsProfilePage() {
                   onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 8))}
                   inputMode="numeric"
                   autoComplete="one-time-code"
-                  placeholder="12345678"
+                  placeholder="123456"
                   maxLength={8}
                   className="font-mono tracking-widest text-base placeholder:text-muted-foreground/40 placeholder:font-normal"
                   required
@@ -463,7 +525,7 @@ export function SettingsProfilePage() {
               <div className="flex flex-wrap items-center gap-3">
                 <Button
                   type="submit"
-                  disabled={pwAction !== "idle" || otpCode.length !== 8 || !newPassword}
+                  disabled={pwAction !== "idle" || otpCode.length < 6 || !newPassword}
                 >
                   {pwAction === "verifying" ? "Verifying…" : "Verify code & update password"}
                 </Button>
@@ -544,6 +606,55 @@ export function SettingsProfilePage() {
         </CardContent>
       </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Download className="h-4 w-4 text-primary" /> Export &amp; data
+          </CardTitle>
+          <CardDescription>
+            Take your data with you. The full backup is one JSON file containing
+            every table; single tables can be downloaded as CSV.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-2">
+            <Button type="button" onClick={downloadFullBackup} disabled={exporting || !user}>
+              <FileDown className="h-4 w-4" />
+              {exporting ? "Exporting…" : "Download full backup (JSON)"}
+            </Button>
+            {exportMsg && <FormMessage msg={exportMsg} />}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="csvTable">Single table as CSV</Label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                id="csvTable"
+                value={csvTable}
+                onChange={(e) => setCsvTable(e.target.value as ExportTable)}
+                disabled={csvBusy}
+                className="w-auto min-w-[220px]"
+              >
+                {EXPORT_TABLES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </Select>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={downloadTableCsv}
+                disabled={csvBusy || !user}
+              >
+                {csvBusy ? "Preparing…" : "Download CSV"}
+              </Button>
+            </div>
+            {csvMsg && <FormMessage msg={csvMsg} />}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card className="border-destructive/40">
         <CardHeader>

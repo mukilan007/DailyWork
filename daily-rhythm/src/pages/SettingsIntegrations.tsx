@@ -170,7 +170,10 @@ export function SettingsIntegrationsPage() {
       credentials: payload.credentials,
       notes: payload.notes ?? null,
     };
-    // Optimistic upsert
+    // Optimistic upsert — keep the row being replaced so a failed upsert can
+    // restore it (dropping it would show "Not connected" even though the old
+    // credentials still exist in the DB).
+    const replaced = byProvider[provider] ?? null;
     setRows((prev) => {
       const next = prev.filter((r) => r.provider !== provider);
       return [...next, row];
@@ -192,8 +195,11 @@ export function SettingsIntegrationsPage() {
       .single();
     if (error) {
       setError(error.message);
-      // rollback
-      setRows((prev) => prev.filter((r) => r.provider !== provider));
+      // rollback to the pre-existing row (if any) rather than deleting it
+      setRows((prev) => {
+        const next = prev.filter((r) => r.provider !== provider);
+        return replaced ? [...next, replaced] : next;
+      });
       return;
     }
     if (data) {

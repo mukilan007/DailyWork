@@ -1,21 +1,25 @@
-// Coding Problem Tracker — domain types, URL parsing, and localStorage I/O.
+// Coding Problem Tracker — URL parsing, metadata fetch, and Supabase CRUD.
 //
-// Storage is intentionally local-only for the MVP so the feature ships without
-// requiring a Supabase migration. When promoted to a server table the shape of
-// `CodingProblem` and `LearnPhase` already matches what the columns will be —
-// just swap `loadProblems` / `saveProblems` for typed supabase.from() calls and
-// add `user_id` to the rows.
+// Storage was promoted from localStorage to the `coding_problems` /
+// `learn_phases` tables (see 20260803000002_job_prep_and_planner.sql).
+// `importFromLocalStorage` migrates any legacy browser-local data exactly
+// once, idempotently, without deleting the originals (they're renamed to a
+// `-imported-backup` suffix so the data is never lost).
 
-export type Difficulty = "easy" | "medium" | "hard";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type {
+  CodingProblemRow,
+  Difficulty,
+  LearnPhaseRow,
+  LearnPhaseStage,
+  PrepTrack,
+  ProblemStatus,
+} from "@/types";
 
-export type ProblemStatus = "todo" | "in_progress" | "solved";
+// Legacy consumers imported these from this module — keep them re-exported.
+export type { Difficulty, LearnPhaseStage, ProblemStatus } from "@/types";
 
-export type LearnPhaseStage =
-  | "learning"
-  | "practicing"
-  | "reviewing"
-  | "mastered";
-
+/** Shape of a problem as stored by the old localStorage-only MVP. */
 export interface CodingProblem {
   id: string;
   url: string;
@@ -30,13 +34,12 @@ export interface CodingProblem {
   created_at: string; // ISO datetime
 }
 
+/** Shape of a learn phase as stored by the old localStorage-only MVP. */
 export interface LearnPhase {
   id: string;
   topic: string;
   stage: LearnPhaseStage;
-  /** ISO date the phase started. */
   started_on: string;
-  /** ISO date the phase wrapped up, or null while still in progress. */
   completed_on: string | null;
   notes: string | null;
   created_at: string;
@@ -44,39 +47,264 @@ export interface LearnPhase {
 
 /** Storage keys follow the existing `daily-rhythm-*` convention used by
  *  useTheme and the sidebar collapse flag. */
-const PROBLEMS_KEY = "daily-rhythm-coding-problems";
-const PHASES_KEY = "daily-rhythm-learn-phases";
+export const LEGACY_PROBLEMS_KEY = "daily-rhythm-coding-problems";
+export const LEGACY_PHASES_KEY = "daily-rhythm-learn-phases";
 
-/* ──────────────────────────── persistence ─────────────────────────── */
+/* ───────────────────────── Supabase CRUD ──────────────────────────── */
 
-function readJson<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
+/** True for Postgres unique-constraint violations (double add, re-import). */
+function isUniqueViolation(err: { code?: string | null } | null): boolean {
+  return err?.code === "23505";
+}
+
+export type ProblemInput = {
+  url: string;
+  title: string;
+  platform: string;
+  difficulty: Difficulty;
+  status: ProblemStatus;
+  tags: string[];
+  companies: string[];
+  solved_on: string | null;
+  notes: string | null;
+};
+
+export async function listProblems(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<CodingProblemRow[]> {
+  const { data, error } = await supabase
+    .from("coding_problems")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data as CodingProblemRow[]) ?? [];
+}
+
+export async function insertProblem(
+  supabase: SupabaseClient,
+  userId: string,
+  input: ProblemInput,
+): Promise<CodingProblemRow> {
+  const { data, error } = await supabase
+    .from("coding_problems")
+    .insert({ user_id: userId, ...input })
+    .select()
+    .single();
+  if (error) {
+    throw new Error(
+      isUniqueViolation(error)
+        ? "You already track this problem."
+        : error.message,
+    );
+  }
+  return data as CodingProblemRow;
+}
+
+export async function updateProblem(
+  supabase: SupabaseClient,
+  id: string,
+  patch: Partial<ProblemInput> & {
+    last_revised_on?: string | null;
+    revise_count?: number;
+  },
+): Promise<CodingProblemRow> {
+  const { data, error } = await supabase
+    .from("coding_problems")
+    .update(patch)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) {
+    throw new Error(
+      isUniqueViolation(error)
+        ? "You already track this problem."
+        : error.message,
+    );
+  }
+  return data as CodingProblemRow;
+}
+
+export async function deleteProblem(
+  supabase: SupabaseClient,
+  id: string,
+): Promise<void> {
+  const { error } = await supabase.from("coding_problems").delete().eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+export type PhaseInput = {
+  topic: string;
+  stage: LearnPhaseStage;
+  track?: PrepTrack;
+  started_on: string;
+  target_on?: string | null;
+  completed_on: string | null;
+  notes: string | null;
+};
+
+export async function listPhases(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<LearnPhaseRow[]> {
+  const { data, error } = await supabase
+    .from("learn_phases")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data as LearnPhaseRow[]) ?? [];
+}
+
+export async function insertPhase(
+  supabase: SupabaseClient,
+  userId: string,
+  input: PhaseInput,
+): Promise<LearnPhaseRow> {
+  const { data, error } = await supabase
+    .from("learn_phases")
+    .insert({ user_id: userId, ...input })
+    .select()
+    .single();
+  if (error) {
+    throw new Error(
+      isUniqueViolation(error)
+        ? "You already track this topic."
+        : error.message,
+    );
+  }
+  return data as LearnPhaseRow;
+}
+
+export async function updatePhase(
+  supabase: SupabaseClient,
+  id: string,
+  patch: Partial<PhaseInput>,
+): Promise<LearnPhaseRow> {
+  const { data, error } = await supabase
+    .from("learn_phases")
+    .update(patch)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) {
+    throw new Error(
+      isUniqueViolation(error)
+        ? "You already track this topic."
+        : error.message,
+    );
+  }
+  return data as LearnPhaseRow;
+}
+
+export async function deletePhase(
+  supabase: SupabaseClient,
+  id: string,
+): Promise<void> {
+  const { error } = await supabase.from("learn_phases").delete().eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+/* ─────────────── one-time localStorage → Supabase import ──────────── */
+
+const DIFFICULTIES: readonly Difficulty[] = ["easy", "medium", "hard"];
+const STATUSES: readonly ProblemStatus[] = ["todo", "in_progress", "solved"];
+const STAGES: readonly LearnPhaseStage[] = [
+  "learning",
+  "practicing",
+  "reviewing",
+  "mastered",
+];
+
+function readLegacyJson<T>(key: string): T[] {
+  if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
   } catch {
-    // Corrupt JSON — start fresh rather than crash the page.
-    return fallback;
+    // Corrupt JSON — nothing importable; leave the key untouched.
+    return [];
   }
 }
 
-function writeJson<T>(key: string, value: T): void {
+/** Rename a legacy key to `<key>-imported-backup` — the original data is
+ *  preserved verbatim, but the app stops seeing it as pending import. */
+function backupLegacyKey(key: string): void {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(key, JSON.stringify(value));
+  const raw = window.localStorage.getItem(key);
+  if (raw === null) return;
+  window.localStorage.setItem(`${key}-imported-backup`, raw);
+  window.localStorage.removeItem(key);
 }
 
-export function loadProblems(): CodingProblem[] {
-  return readJson<CodingProblem[]>(PROBLEMS_KEY, []);
-}
-export function saveProblems(rows: CodingProblem[]): void {
-  writeJson(PROBLEMS_KEY, rows);
-}
+/**
+ * Migrate legacy browser-local problems / phases into Supabase.
+ *
+ * Idempotent: rows upsert against the natural-key unique indexes with
+ * `ignoreDuplicates`, and the legacy keys are renamed (never deleted) only
+ * after BOTH upserts succeed — so a re-run after any failure retries safely,
+ * and a re-run after success is a no-op.
+ */
+export async function importFromLocalStorage(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<{ problems: number; phases: number }> {
+  const legacyProblems = readLegacyJson<CodingProblem>(LEGACY_PROBLEMS_KEY);
+  const legacyPhases = readLegacyJson<LearnPhase>(LEGACY_PHASES_KEY);
+  if (legacyProblems.length === 0 && legacyPhases.length === 0) {
+    return { problems: 0, phases: 0 };
+  }
 
-export function loadPhases(): LearnPhase[] {
-  return readJson<LearnPhase[]>(PHASES_KEY, []);
-}
-export function savePhases(rows: LearnPhase[]): void {
-  writeJson(PHASES_KEY, rows);
+  const problemRows = legacyProblems
+    .filter((p) => typeof p?.url === "string" && p.url.trim())
+    .map((p) => ({
+      user_id: userId,
+      url: p.url.trim(),
+      title: p.title || p.url.trim(),
+      platform: p.platform ?? "",
+      difficulty: DIFFICULTIES.includes(p.difficulty) ? p.difficulty : "medium",
+      status: STATUSES.includes(p.status) ? p.status : "todo",
+      tags: normaliseTags(Array.isArray(p.tags) ? p.tags : []),
+      companies: [] as string[],
+      solved_on: p.solved_on ?? null,
+      last_revised_on: null,
+      revise_count: 0,
+      notes: p.notes ?? null,
+      created_at: p.created_at ?? new Date().toISOString(),
+    }));
+
+  const phaseRows = legacyPhases
+    .filter((p) => typeof p?.topic === "string" && p.topic.trim())
+    .map((p) => ({
+      user_id: userId,
+      topic: p.topic.trim(),
+      stage: STAGES.includes(p.stage) ? p.stage : "learning",
+      started_on: p.started_on || (p.created_at ?? new Date().toISOString()).slice(0, 10),
+      completed_on: p.completed_on ?? null,
+      notes: p.notes ?? null,
+      created_at: p.created_at ?? new Date().toISOString(),
+    }));
+
+  if (problemRows.length > 0) {
+    const { error } = await supabase
+      .from("coding_problems")
+      .upsert(problemRows, { onConflict: "user_id,url", ignoreDuplicates: true });
+    if (error) throw new Error(`Import failed: ${error.message}`);
+  }
+  if (phaseRows.length > 0) {
+    const { error } = await supabase
+      .from("learn_phases")
+      .upsert(phaseRows, { onConflict: "user_id,topic", ignoreDuplicates: true });
+    if (error) throw new Error(`Import failed: ${error.message}`);
+  }
+
+  // Both upserts succeeded — retire the legacy keys (keep the data as backup).
+  backupLegacyKey(LEGACY_PROBLEMS_KEY);
+  backupLegacyKey(LEGACY_PHASES_KEY);
+
+  return { problems: problemRows.length, phases: phaseRows.length };
 }
 
 /* ─────────────────────────── URL detection ────────────────────────── */
@@ -274,7 +502,9 @@ export function normaliseTags(input: string | string[]): string[] {
 
 /** Count tag occurrences across all problems — used to rank tag chips and to
  *  power the "Top tags" summary card. */
-export function tagFrequencies(problems: CodingProblem[]): Map<string, number> {
+export function tagFrequencies(
+  problems: Array<Pick<CodingProblemRow, "tags">>,
+): Map<string, number> {
   const m = new Map<string, number>();
   for (const p of problems) {
     for (const t of p.tags) m.set(t, (m.get(t) ?? 0) + 1);
@@ -282,10 +512,28 @@ export function tagFrequencies(problems: CodingProblem[]): Map<string, number> {
   return m;
 }
 
+/** Count company-tag occurrences — powers the company filter chips. */
+export function companyFrequencies(
+  problems: Array<Pick<CodingProblemRow, "companies">>,
+): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const p of problems) {
+    for (const c of p.companies ?? []) m.set(c, (m.get(c) ?? 0) + 1);
+  }
+  return m;
+}
+
 /* ─────────────────────────── streak math ──────────────────────────── */
 
-/** Current consecutive-day streak of solved problems, anchored to today. */
-export function currentStreak(problems: CodingProblem[], today = new Date()): number {
+/**
+ * Current consecutive-day streak of solved problems. A streak isn't broken
+ * until midnight: if nothing is solved *today yet*, count back from
+ * yesterday — matching `computeStreak` in DailyRoutine.
+ */
+export function currentStreak(
+  problems: Array<Pick<CodingProblemRow, "solved_on">>,
+  today = new Date(),
+): number {
   const solved = new Set(
     problems.filter((p) => p.solved_on).map((p) => p.solved_on as string),
   );
@@ -294,6 +542,9 @@ export function currentStreak(problems: CodingProblem[], today = new Date()): nu
   const cursor = new Date(today);
   // Anchor at midnight to avoid timezone drift while iterating.
   cursor.setHours(0, 0, 0, 0);
+  if (!solved.has(ymd(cursor))) {
+    cursor.setDate(cursor.getDate() - 1);
+  }
   while (solved.has(ymd(cursor))) {
     streak += 1;
     cursor.setDate(cursor.getDate() - 1);

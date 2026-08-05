@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus,
   Pencil,
@@ -177,13 +177,33 @@ export function DailyRoutinePage() {
     return map;
   }, [completions]);
 
+  // Cells with a request in flight — blocks double-clicks from racing an
+  // INSERT against a DELETE for the same (activity, day).
+  const pendingToggles = useRef(new Set<string>());
+
   /** Toggle completion for an activity on the given date. Future dates are ignored. */
   async function toggleDate(activity: Activity, dateKey: string) {
     if (!user) return;
     if (dateKey > today) return; // can't check off the future
+    const toggleKey = `${activity.id}|${dateKey}`;
+    if (pendingToggles.current.has(toggleKey)) return;
+    pendingToggles.current.add(toggleKey);
+    try {
+      await doToggleDate(activity, dateKey);
+    } finally {
+      pendingToggles.current.delete(toggleKey);
+    }
+  }
+
+  async function doToggleDate(activity: Activity, dateKey: string) {
+    if (!user) return;
     const done = completedByActivity.get(activity.id)?.has(dateKey) ?? false;
     if (done) {
-      // Optimistic remove
+      // Optimistic remove — keep the removed rows so a failed DELETE can
+      // restore them instead of leaving UI and DB out of sync.
+      const removed = completions.filter(
+        (c) => c.activity_id === activity.id && c.completed_on === dateKey
+      );
       setCompletions((prev) =>
         prev.filter((c) => !(c.activity_id === activity.id && c.completed_on === dateKey))
       );
@@ -192,7 +212,10 @@ export function DailyRoutinePage() {
         .delete()
         .eq("activity_id", activity.id)
         .eq("completed_on", dateKey);
-      if (error) setError(error.message);
+      if (error) {
+        setCompletions((prev) => [...removed, ...prev]);
+        setError(error.message);
+      }
     } else {
       const optimistic: ActivityCompletion = {
         id: `tmp-${Date.now()}-${dateKey}`,
