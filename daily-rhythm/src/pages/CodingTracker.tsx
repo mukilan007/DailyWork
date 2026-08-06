@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { SkeletonList } from "@/components/ui/Skeleton";
+import { CodingHeatmap } from "@/components/CodingHeatmap";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -291,6 +292,9 @@ export function CodingTrackerPage() {
           icon={<Tag className="h-4 w-4" />}
         />
       </div>
+
+      {/* Contribution heatmap — daily solves across the year */}
+      <CodingHeatmap problems={problems} />
 
       {/* Problems section */}
       <Card>

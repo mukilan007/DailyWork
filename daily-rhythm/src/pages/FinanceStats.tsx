@@ -1,8 +1,12 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   BarChart3,
   CalendarRange,
   CalendarDays,
+  ChevronDown,
   Pencil,
   PieChart as PieIcon,
   Plus,
@@ -19,6 +23,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Dialog } from "@/components/ui/Dialog";
 import { Input } from "@/components/ui/Input";
+import { DateField } from "@/components/ui/DateField";
 import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -43,6 +48,7 @@ import {
   startOfMonth,
 } from "@/lib/finance";
 import { MonthSwitcher } from "@/components/finance/MonthSwitcher";
+import { useFinanceRange } from "@/hooks/useFinanceRange";
 
 type SubTab = "stats" | "budget" | "note";
 type Side = "income" | "expense";
@@ -50,20 +56,23 @@ type FilterMode = "month" | "range";
 
 export function FinanceStatsPage() {
   const { user } = useAuth();
-  const today = new Date();
-  const [year, setYear] = useState(today.getFullYear());
-  const [month, setMonth] = useState(today.getMonth());
   const [tab, setTab] = useState<SubTab>("stats");
   const [side, setSide] = useState<Side>("expense");
 
-  // Date filter — either a single month (default) or an arbitrary date range.
-  const [filterMode, setFilterMode] = useState<FilterMode>("month");
-  const [rangeFrom, setRangeFrom] = useState<string>(
-    ymd(startOfMonth(today.getFullYear(), today.getMonth()))
-  );
-  const [rangeTo, setRangeTo] = useState<string>(
-    ymd(endOfMonth(today.getFullYear(), today.getMonth()))
-  );
+  // Date filter — shared across all Finance pages (Transactions ↔ Stats) via
+  // FinanceRangeProvider, so the selected month/range persists between them.
+  const {
+    filterMode,
+    setFilterMode,
+    year,
+    setYear,
+    month,
+    setMonth,
+    rangeFrom,
+    setRangeFrom,
+    rangeTo,
+    setRangeTo,
+  } = useFinanceRange();
 
   const [transactions, setTransactions] = useState<FinanceTransaction[]>([]);
   const [categories, setCategories] = useState<FinanceCategory[]>([]);
@@ -334,7 +343,12 @@ export function FinanceStatsPage() {
       {loading ? (
         <SkeletonList rows={4} />
       ) : tab === "stats" ? (
-        <StatsTab slices={slices} side={side} />
+        <StatsTab
+          slices={slices}
+          side={side}
+          transactions={transactions}
+          categories={categories}
+        />
       ) : tab === "budget" ? (
         filterMode === "range" ? (
           <EmptyState
@@ -460,22 +474,22 @@ function RangeFilter({
       <div className="grid grid-cols-1 sm:grid-cols-[1fr,1fr] gap-2">
         <div className="space-y-1">
           <Label htmlFor="range-from">From</Label>
-          <Input
+          <DateField
             id="range-from"
-            type="date"
             value={from}
             max={to}
-            onChange={(e) => onChange(e.target.value || from, to)}
+            quickPicks={false}
+            onChange={(next) => onChange(next || from, to)}
           />
         </div>
         <div className="space-y-1">
           <Label htmlFor="range-to">To</Label>
-          <Input
+          <DateField
             id="range-to"
-            type="date"
             value={to}
             min={from}
-            onChange={(e) => onChange(from, e.target.value || to)}
+            quickPicks={false}
+            onChange={(next) => onChange(from, next || to)}
           />
         </div>
       </div>
@@ -515,10 +529,63 @@ function RangeFilter({
 function StatsTab({
   slices,
   side,
+  transactions,
+  categories,
 }: {
   slices: ReturnType<typeof sliceByTopCategory>;
   side: Side;
+  transactions: FinanceTransaction[];
+  categories: FinanceCategory[];
 }) {
+  // Which category rows are expanded to show their note-level breakdown.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  function toggle(key: string) {
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  const catMap = useMemo(
+    () => new Map(categories.map((c) => [c.id, c])),
+    [categories]
+  );
+
+  // Note breakdown per top-level category key, using the SAME roll-up rule as
+  // sliceByTopCategory (subcategory → parent; missing/none → "uncategorised").
+  const notesByKey = useMemo(() => {
+    const acc = new Map<
+      string,
+      Map<string, { note: string; count: number; total_paise: number }>
+    >();
+    for (const t of transactions) {
+      if (t.kind !== side) continue;
+      const cat = t.category_id ? catMap.get(t.category_id) : undefined;
+      const top = cat?.parent_id ? catMap.get(cat.parent_id) ?? cat : cat;
+      const key = top?.id ?? "uncategorised";
+      const noteKey = (t.note ?? "").trim();
+      let inner = acc.get(key);
+      if (!inner) {
+        inner = new Map();
+        acc.set(key, inner);
+      }
+      const cur = inner.get(noteKey) ?? { note: noteKey, count: 0, total_paise: 0 };
+      cur.count += 1;
+      cur.total_paise += t.amount_paise;
+      inner.set(noteKey, cur);
+    }
+    const out = new Map<
+      string,
+      Array<{ note: string; count: number; total_paise: number }>
+    >();
+    for (const [k, inner] of acc) {
+      out.set(k, [...inner.values()].sort((a, b) => b.total_paise - a.total_paise));
+    }
+    return out;
+  }, [transactions, side, catMap]);
+
   if (slices.length === 0) {
     return (
       <EmptyState
@@ -566,24 +633,66 @@ function StatsTab({
       <Card>
         <CardContent className="p-0">
           <ul className="divide-y">
-            {slices.map((s) => (
-              <li
-                key={s.key}
-                className="flex items-center gap-3 px-5 py-3 text-sm"
-              >
-                <span
-                  className="inline-flex items-center justify-center rounded px-2 py-0.5 text-xs font-medium"
-                  style={{
-                    backgroundColor: `${s.color}33`,
-                    color: s.color,
-                  }}
-                >
-                  {s.pct.toFixed(0)}%
-                </span>
-                <span className="flex-1 truncate">{s.label}</span>
-                <span className="font-semibold">{formatINR(s.total_paise)}</span>
-              </li>
-            ))}
+            {slices.map((s) => {
+              const notes = notesByKey.get(s.key) ?? [];
+              const isOpen = expanded.has(s.key);
+              const canExpand = notes.length > 0;
+              return (
+                <li key={s.key}>
+                  <button
+                    type="button"
+                    onClick={() => canExpand && toggle(s.key)}
+                    aria-expanded={isOpen}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-5 py-3 text-sm text-left transition-colors",
+                      canExpand ? "hover:bg-accent/40 cursor-pointer" : "cursor-default"
+                    )}
+                  >
+                    <span
+                      className="inline-flex items-center justify-center rounded px-2 py-0.5 text-xs font-medium"
+                      style={{ backgroundColor: `${s.color}33`, color: s.color }}
+                    >
+                      {s.pct.toFixed(0)}%
+                    </span>
+                    <span className="flex-1 truncate">{s.label}</span>
+                    <span className="font-semibold">{formatINR(s.total_paise)}</span>
+                    {canExpand && (
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 text-muted-foreground transition-transform shrink-0",
+                          isOpen && "rotate-180"
+                        )}
+                      />
+                    )}
+                  </button>
+                  {isOpen && (
+                    <ul className="bg-muted/30 border-t text-xs">
+                      {notes.map((n) => (
+                        <li
+                          key={n.note || "(no note)"}
+                          className="flex items-center gap-3 pl-10 pr-5 py-2"
+                        >
+                          <span className="flex-1 truncate text-muted-foreground">
+                            {n.note || <span className="italic">(no note)</span>}
+                            <span className="ml-2 text-muted-foreground/70">
+                              ×{n.count}
+                            </span>
+                          </span>
+                          <span className="tabular-nums text-muted-foreground/70">
+                            {s.total_paise > 0
+                              ? `${((n.total_paise / s.total_paise) * 100).toFixed(0)}%`
+                              : ""}
+                          </span>
+                          <span className="font-medium tabular-nums w-24 text-right">
+                            {formatINR(n.total_paise)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </CardContent>
       </Card>
@@ -735,11 +844,40 @@ function BudgetTab({
 // Note sub-tab
 // ---------------------------------------------------------------------------
 
+type NoteSortKey = "note" | "count" | "amount";
+type SortDir = "asc" | "desc";
+
 function NoteTab({
   buckets,
 }: {
   buckets: ReturnType<typeof sliceByNote>;
 }) {
+  // Default: highest amount first (matches how sliceByNote already orders).
+  const [sortKey, setSortKey] = useState<NoteSortKey>("amount");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function toggleSort(key: NoteSortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // Sensible default direction per column: text ascending, numbers desc.
+      setSortDir(key === "note" ? "asc" : "desc");
+    }
+  }
+
+  const sorted = useMemo(() => {
+    const arr = [...buckets];
+    arr.sort((a, b) => {
+      let cmp: number;
+      if (sortKey === "note") cmp = a.note.localeCompare(b.note);
+      else if (sortKey === "count") cmp = a.count - b.count;
+      else cmp = a.total_paise - b.total_paise;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return arr;
+  }, [buckets, sortKey, sortDir]);
+
   if (buckets.length === 0) {
     return (
       <EmptyState
@@ -749,16 +887,46 @@ function NoteTab({
       />
     );
   }
+
+  const SortHeader = ({
+    label,
+    col,
+    align,
+  }: {
+    label: string;
+    col: NoteSortKey;
+    align: "left" | "right";
+  }) => {
+    const active = sortKey === col;
+    const Icon = !active ? ArrowUpDown : sortDir === "asc" ? ArrowUp : ArrowDown;
+    return (
+      <button
+        type="button"
+        onClick={() => toggleSort(col)}
+        aria-label={`Sort by ${label}`}
+        className={cn(
+          "inline-flex items-center gap-1 uppercase transition-colors hover:text-foreground",
+          align === "right" ? "justify-end" : "justify-start",
+          active ? "text-foreground" : "text-muted-foreground"
+        )}
+      >
+        {align === "right" && <Icon className="h-3 w-3" />}
+        {label}
+        {align === "left" && <Icon className="h-3 w-3" />}
+      </button>
+    );
+  };
+
   return (
     <Card>
       <CardContent className="p-0">
-        <div className="grid grid-cols-[1fr,60px,120px] gap-3 px-5 py-3 border-b text-xs uppercase text-muted-foreground">
-          <span>Note</span>
-          <span className="text-right">Count</span>
-          <span className="text-right">Amount</span>
+        <div className="grid grid-cols-[1fr,60px,120px] gap-3 px-5 py-3 border-b text-xs">
+          <SortHeader label="Note" col="note" align="left" />
+          <SortHeader label="Count" col="count" align="right" />
+          <SortHeader label="Amount" col="amount" align="right" />
         </div>
         <ul className="divide-y text-sm">
-          {buckets.map((b) => (
+          {sorted.map((b) => (
             <li
               key={b.note || "(no note)"}
               className="grid grid-cols-[1fr,60px,120px] gap-3 px-5 py-3 items-center"

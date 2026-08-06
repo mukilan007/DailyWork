@@ -1107,7 +1107,6 @@ function BlockDialog({
               type="number"
               min={5}
               max={720}
-              step={5}
               inputMode="numeric"
               value={duration}
               onChange={(e) => setDuration(e.target.value)}

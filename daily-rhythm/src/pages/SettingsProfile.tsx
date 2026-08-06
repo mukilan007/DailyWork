@@ -74,6 +74,7 @@ export function SettingsProfilePage() {
   const [retention, setRetention] = useState<number>(RETENTION_DEFAULT);
   const [retentionAvailable, setRetentionAvailable] = useState(true);
   const [savingRetention, setSavingRetention] = useState(false);
+  const [pruning, setPruning] = useState(false);
   const [retentionMsg, setRetentionMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
@@ -301,8 +302,37 @@ export function SettingsProfilePage() {
     setRetentionMsg(
       error
         ? { kind: "error", text: error.message }
-        : { kind: "success", text: "Retention updated. Pruning runs nightly." }
+        : { kind: "success", text: "Retention window saved. Use “Prune now” to apply it." }
     );
+  }
+
+  async function handlePruneNow() {
+    if (!user || pruning) return;
+    const ok = window.confirm(
+      "Prune now permanently deletes ALL your dated history older than your " +
+        "retention window — habits, workouts, health logs, todos, mood/focus/" +
+        "study logs, planner, coding problems, roadmap, mock interviews, " +
+        "applications, vault notes, and finance transactions/budgets. Your " +
+        "accounts, categories, habit list, recurring templates, settings, and " +
+        "integrations are kept. This can't be undone. Continue?"
+    );
+    if (!ok) return;
+    setPruning(true);
+    setRetentionMsg(null);
+    const { data, error } = await supabase.rpc("prune_my_data");
+    setPruning(false);
+    if (error) {
+      setRetentionMsg({ kind: "error", text: error.message });
+      return;
+    }
+    const total = (data as { total?: number } | null)?.total ?? 0;
+    setRetentionMsg({
+      kind: "success",
+      text:
+        total > 0
+          ? `Pruned ${total} old row${total === 1 ? "" : "s"}.`
+          : "Nothing to prune — no data is older than your retention window yet.",
+    });
   }
 
   async function downloadFullBackup() {
@@ -564,8 +594,8 @@ export function SettingsProfilePage() {
             <Database className="h-4 w-4 text-primary" /> Data retention
           </CardTitle>
           <CardDescription>
-            How long to keep your time-series data. Anything older is pruned
-            nightly. Maximum 2 years.
+            How long to keep your time-series data. Save your window, then use
+            “Prune now” to delete anything older. Maximum 2 years.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -587,21 +617,36 @@ export function SettingsProfilePage() {
             </div>
 
             <div className="rounded-md border border-input bg-muted/30 p-3 text-xs space-y-1.5">
-              <p className="font-medium text-foreground">What gets pruned</p>
+              <p className="font-medium text-foreground">
+                What gets pruned (older than your window)
+              </p>
               <ul className="list-disc pl-5 text-muted-foreground space-y-0.5">
-                <li>Activity completions, workouts, period logs, glucose readings, todos</li>
+                <li>All dated history: habits, workouts, period &amp; glucose logs, todos, mood/focus/study sessions, planner blocks</li>
+                <li>Coding problems, roadmap topics, mock interviews, applications, vault notes</li>
+                <li>Finance transactions and budgets</li>
               </ul>
-              <p className="font-medium text-foreground mt-2">What is kept</p>
+              <p className="font-medium text-foreground mt-2">What is kept (never pruned)</p>
               <ul className="list-disc pl-5 text-muted-foreground space-y-0.5">
-                <li>Your profile, habit list, and connected integrations</li>
+                <li>Your setup: profile, habit list, finance accounts &amp; categories</li>
+                <li>Recurring templates, targets/settings, and connected integrations</li>
               </ul>
             </div>
 
             {retentionMsg && <FormMessage msg={retentionMsg} />}
 
-            <Button type="submit" disabled={savingRetention || loadingProfile}>
-              {savingRetention ? "Saving…" : "Save retention"}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="submit" disabled={savingRetention || loadingProfile}>
+                {savingRetention ? "Saving…" : "Save retention"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handlePruneNow}
+                disabled={pruning || loadingProfile}
+              >
+                {pruning ? "Pruning…" : "Prune now"}
+              </Button>
+            </div>
           </form>
         </CardContent>
       </Card>

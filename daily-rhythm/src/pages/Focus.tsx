@@ -139,6 +139,11 @@ export function FocusPage() {
   const [completed, setCompleted] = useState<CompletedInfo | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const loggingRef = useRef(false); // double-submit guard for session insert
+  // After a session that was attached to a ticket, offer to mark that ticket
+  // done. "prompt" = show the suggestion, "marking" = save in flight,
+  // "marked" = confirmed. Reset whenever a new completion card appears.
+  const [markDoneState, setMarkDoneState] =
+    useState<"idle" | "marking" | "marked" | "dismissed">("idle");
 
   // ---- data fetch ----
   useEffect(() => {
@@ -288,6 +293,7 @@ export function FocusPage() {
       storeActive(null);
       setConfirmAbandon(false);
       setCompleted(info);
+      setMarkDoneState("idle");
       setError(null);
       await insertSession(info);
     } finally {
@@ -303,6 +309,25 @@ export function FocusPage() {
     } finally {
       loggingRef.current = false;
     }
+  }
+
+  /** Mark the ticket this session was attached to as done (offered on the
+   *  completion card). Optimistic; rolls back on error. */
+  async function markCompletedTodoDone(todoId: string) {
+    setMarkDoneState("marking");
+    const { error: updErr } = await supabase
+      .from("todos")
+      .update({ is_done: true })
+      .eq("id", todoId);
+    if (updErr) {
+      setMarkDoneState("idle");
+      setError(updErr.message);
+      return;
+    }
+    setTodos((list) =>
+      list.map((t) => (t.id === todoId ? { ...t, is_done: true } : t))
+    );
+    setMarkDoneState("marked");
   }
 
   // ---- timer controls ----
@@ -571,6 +596,51 @@ export function FocusPage() {
                 </Button>
               </div>
             )}
+
+            {/* Suggestion: mark the attached ticket done. Only when the session
+                was tied to a still-open ticket. */}
+            {(() => {
+              if (!completed.todoId) return null;
+              const t = todoById.get(completed.todoId);
+              if (!t) return null;
+              if (markDoneState === "marked" || t.is_done) {
+                return (
+                  <p className="inline-flex items-center gap-1.5 text-sm text-emerald-500">
+                    <CheckCircle2 className="h-4 w-4" />
+                    Marked “{t.title}” as done
+                  </p>
+                );
+              }
+              if (markDoneState === "dismissed") return null;
+              return (
+                <div className="w-full max-w-sm rounded-md border border-primary/30 bg-primary/5 p-3 flex flex-col items-center gap-2">
+                  <p className="text-sm font-medium">Finished this ticket?</p>
+                  <p className="text-xs text-muted-foreground text-center truncate max-w-full">
+                    {t.title}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={markDoneState === "marking"}
+                      onClick={() => void markCompletedTodoDone(t.id)}
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                      {markDoneState === "marking" ? "Marking…" : "Mark done"}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setMarkDoneState("dismissed")}
+                    >
+                      Not yet
+                    </Button>
+                  </div>
+                </div>
+              );
+            })()}
+
             <Button
               type="button"
               variant="outline"
@@ -688,7 +758,6 @@ export function FocusPage() {
                     type="number"
                     min={1}
                     max={480}
-                    step={5}
                     inputMode="numeric"
                     value={customDuration}
                     onChange={(e) => setCustomDuration(e.target.value)}

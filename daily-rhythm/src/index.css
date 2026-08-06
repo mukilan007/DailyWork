@@ -36,6 +36,9 @@
     --sidebar-border: 240 6% 92%;
 
     --radius: 0.625rem;
+
+    /* Make native controls (date picker, selects, scrollbars) render light. */
+    color-scheme: light;
   }
 
   .dark {
@@ -69,6 +72,9 @@
     --sidebar-accent: 262 83% 22%;
     --sidebar-accent-foreground: 262 83% 90%;
     --sidebar-border: 240 6% 16%;
+
+    /* Native calendar / dropdowns / scrollbars follow the dark theme. */
+    color-scheme: dark;
   }
 
   /* Panda theme — bamboo-green primary with peachy-pink accents, sitting on
@@ -105,6 +111,9 @@
     --sidebar-accent: 150 55% 90%;
     --sidebar-accent-foreground: 150 60% 22%;
     --sidebar-border: 150 30% 84%;
+
+    /* Panda is a light theme — keep native controls light. */
+    color-scheme: light;
   }
 
   /* Multi-layered panda background: a vibrant gradient base + a fixed,

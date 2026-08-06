@@ -1,5 +1,14 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { ChevronRight, Pencil, Plus, Tag, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  ChevronUp,
+  ChevronDown,
+  GripVertical,
+  Pencil,
+  Plus,
+  Tag,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Dialog } from "@/components/ui/Dialog";
@@ -28,6 +37,8 @@ export function FinanceCategoriesPage() {
   const [confirmDelete, setConfirmDelete] = useState<FinanceCategory | null>(null);
   const [busy, setBusy] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
+  /** Index of the row currently being dragged (within `showing`). */
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -50,8 +61,16 @@ export function FinanceCategoriesPage() {
     };
   }, [user]);
 
+  /** Stable sibling ordering: by `position`, then creation time as tie-break
+   *  (positions can start out all-zero for pre-existing rows). */
+  const byOrder = (a: FinanceCategory, b: FinanceCategory) =>
+    a.position - b.position || a.created_at.localeCompare(b.created_at);
+
   const parents = useMemo(
-    () => categories.filter((c) => !c.parent_id && c.kind === kindFilter),
+    () =>
+      categories
+        .filter((c) => !c.parent_id && c.kind === kindFilter)
+        .sort(byOrder),
     [categories, kindFilter]
   );
   const childCount = useMemo(() => {
@@ -181,9 +200,63 @@ export function FinanceCategoriesPage() {
     setConfirmDelete(null);
   }
 
-  const showing = drillParent
-    ? categories.filter((c) => c.parent_id === drillParent.id)
-    : parents;
+  const showing = useMemo(
+    () =>
+      drillParent
+        ? categories.filter((c) => c.parent_id === drillParent.id).sort(byOrder)
+        : parents,
+    [drillParent, categories, parents]
+  );
+
+  /** Persist a new sibling order: assign sequential positions and update only
+   *  the rows that actually moved. Optimistic, rolls back on any failure. */
+  async function persistOrder(reordered: FinanceCategory[]) {
+    const updates: Array<{ id: string; position: number }> = [];
+    reordered.forEach((c, i) => {
+      if (c.position !== i) updates.push({ id: c.id, position: i });
+    });
+    if (updates.length === 0) return;
+
+    const prev = categories;
+    const newPos = new Map(updates.map((u) => [u.id, u.position]));
+    setCategories((cur) =>
+      cur.map((c) => (newPos.has(c.id) ? { ...c, position: newPos.get(c.id)! } : c))
+    );
+
+    const results = await Promise.all(
+      updates.map((u) =>
+        supabase
+          .from("finance_categories")
+          .update({ position: u.position })
+          .eq("id", u.id)
+      )
+    );
+    const failed = results.find((r) => r.error);
+    if (failed?.error) {
+      setCategories(prev); // roll back the whole group
+      setError(failed.error.message);
+    }
+  }
+
+  /** Move a row up (-1) or down (+1) within its sibling group. */
+  function move(index: number, dir: -1 | 1) {
+    const target = index + dir;
+    if (target < 0 || target >= showing.length) return;
+    const reordered = [...showing];
+    const [item] = reordered.splice(index, 1);
+    reordered.splice(target, 0, item);
+    void persistOrder(reordered);
+  }
+
+  function handleDrop(dropIndex: number) {
+    const from = dragIndex;
+    setDragIndex(null);
+    if (from === null || from === dropIndex) return;
+    const reordered = [...showing];
+    const [item] = reordered.splice(from, 1);
+    reordered.splice(dropIndex, 0, item);
+    void persistOrder(reordered);
+  }
 
   return (
     <div className="space-y-6">
@@ -263,13 +336,32 @@ export function FinanceCategoriesPage() {
         <Card>
           <CardContent className="p-0">
             <ul className="divide-y">
-              {showing.map((c) => {
+              {showing.map((c, i) => {
                 const children = childCount.get(c.id) ?? [];
                 return (
                   <li
                     key={c.id}
-                    className="flex items-center justify-between gap-3 px-5 py-3 text-sm"
+                    onDragOver={(e) => {
+                      if (dragIndex !== null) e.preventDefault();
+                    }}
+                    onDrop={() => handleDrop(i)}
+                    className={cn(
+                      "flex items-center justify-between gap-2 px-3 sm:px-5 py-3 text-sm",
+                      dragIndex === i && "opacity-50",
+                      dragIndex !== null && dragIndex !== i && "hover:bg-accent/40"
+                    )}
                   >
+                    {/* Drag handle — starts the drag; drop anywhere on a row. */}
+                    <span
+                      draggable
+                      onDragStart={() => setDragIndex(i)}
+                      onDragEnd={() => setDragIndex(null)}
+                      aria-label={`Drag to reorder ${c.name}`}
+                      title="Drag to reorder"
+                      className="shrink-0 cursor-grab active:cursor-grabbing rounded-md p-1 text-muted-foreground/60 hover:text-foreground"
+                    >
+                      <GripVertical className="h-4 w-4" />
+                    </span>
                     <button
                       type="button"
                       disabled={!!drillParent}
@@ -293,7 +385,26 @@ export function FinanceCategoriesPage() {
                         </div>
                       )}
                     </button>
-                    <div className="flex items-center gap-1 shrink-0">
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      {/* Up / down — keyboard- and touch-friendly reordering. */}
+                      <button
+                        type="button"
+                        onClick={() => move(i, -1)}
+                        disabled={i === 0}
+                        aria-label={`Move ${c.name} up`}
+                        className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                      >
+                        <ChevronUp className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => move(i, 1)}
+                        disabled={i === showing.length - 1}
+                        aria-label={`Move ${c.name} down`}
+                        className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                      >
+                        <ChevronDown className="h-4 w-4" />
+                      </button>
                       <button
                         type="button"
                         onClick={() => openEdit(c)}

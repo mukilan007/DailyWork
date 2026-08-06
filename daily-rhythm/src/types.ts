@@ -96,6 +96,51 @@ export type GlucoseReading = {
 
 export type TodoPriority = "low" | "medium" | "high";
 
+/** Per-space category (color-coded, optional keyboard shortcut). */
+export type TodoCategory = {
+  key: string;
+  label: string;
+  color: string;
+  /** Single uppercase key for Alt+<key> quick-switch. */
+  shortcut?: string | null;
+};
+
+/** Per-space status/state (color + optional icon glyph). */
+export type TodoStatus = {
+  key: string;
+  label: string;
+  color: string;
+  icon?: string | null;
+  /** Terminal statuses mark the todo done (keeps is_done in sync). */
+  done?: boolean;
+};
+
+export type TodoCustomFieldType = "text" | "number";
+
+/** Per-space extra field shown on every ticket in that space. */
+export type TodoCustomField = {
+  key: string;
+  label: string;
+  type: TodoCustomFieldType;
+  required?: boolean;
+};
+
+/** A todo "space"/project. Todos with a null space_id belong to the Inbox. */
+export type TodoSpace = {
+  id: string;
+  user_id: string;
+  name: string;
+  color: string | null;
+  position: number;
+  created_at: string;
+  /** Soft-archive timestamp; null = active. */
+  archived_at?: string | null;
+  /** Per-space config (JSONB). Empty arrays until the user adds their own. */
+  categories: TodoCategory[];
+  statuses: TodoStatus[];
+  custom_fields: TodoCustomField[];
+};
+
 export type Todo = {
   id: string;
   user_id: string;
@@ -108,10 +153,21 @@ export type Todo = {
   priority: TodoPriority;
   /** Optional effort estimate in minutes (1..1440). */
   estimated_min: number | null;
+  /** The date this ticket is *for* (YYYY-MM-DD); separate from due_at. */
+  task_date?: string | null;
   /** Set on todos materialised from a recurrence. */
   recurrence_id?: string | null;
   /** Occurrence date (YYYY-MM-DD) for recurrence-materialised todos. */
   recurrence_due_on?: string | null;
+  /** Owning space; null = Inbox. */
+  space_id?: string | null;
+  /** Category key into the space's `categories` config; null = none. */
+  category?: string | null;
+  /** Status key into the space's `statuses` config (default "todo"). */
+  status?: string;
+  tags?: string[];
+  /** Values for the space's custom fields, keyed by field key. */
+  custom?: Record<string, unknown>;
 };
 
 // =============================================================================
@@ -264,6 +320,8 @@ export type TodoRecurrence = {
   end_on: string | null;
   last_materialised_on: string | null;
   created_at: string;
+  /** Space the materialised todos land in; null = Inbox. */
+  space_id?: string | null;
 };
 
 export type MoodSlot = "morning" | "evening";

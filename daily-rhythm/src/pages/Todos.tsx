@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import {
   Plus,
   Trash2,
@@ -10,8 +11,11 @@ import {
   Clock,
   Flag,
   AlertCircle,
+  ArrowLeft,
   CalendarClock,
   Repeat,
+  Settings,
+  ChevronDown,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -28,6 +32,7 @@ import { SkeletonList } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
 import { formatRelative, ymd } from "@/lib/dates";
+import { DateField } from "@/components/ui/DateField";
 import { exportReport } from "@/lib/export";
 import {
   createTodoRecurrence,
@@ -44,8 +49,18 @@ import type {
   TodoPriority,
   TodoRecurrence,
   TodoRecurrenceTemplate,
+  TodoSpace,
 } from "@/types";
 import { cn } from "@/lib/utils";
+import {
+  INBOX_CONFIG,
+  spaceConfig,
+  statusIsDone,
+  findStatus,
+  findCategory,
+  DEFAULT_STATUS_KEY,
+  type SpaceConfig,
+} from "@/lib/todo-config";
 
 type Filter = "all" | "active" | "done";
 
@@ -59,28 +74,81 @@ const PRIORITY_RANK: Record<TodoPriority, number> = { high: 0, medium: 1, low: 2
 
 export function TodosPage() {
   const { user } = useAuth();
+  const { spaceId } = useParams();
+  // "inbox" is the space-less bucket (space_id IS NULL). Any other value is a
+  // real space id we scope every query, insert, and recurrence to.
+  const isInbox = spaceId === "inbox";
+  const effectiveSpaceId = isInbox ? null : spaceId ?? null;
+
   const [todos, setTodos] = useState<Todo[]>([]);
+  const [space, setSpace] = useState<TodoSpace | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
+  // Multi-select filters — empty array = show all.
+  const [categoryFilter, setCategoryFilter] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  // Task-date range filter (YYYY-MM-DD); empty = unbounded on that side.
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Todo | null>(null);
   const [repeatsOpen, setRepeatsOpen] = useState(false);
 
+  // Resolved per-space schema. Inbox has no config row → sensible defaults
+  // (no categories, default statuses, no custom fields).
+  const config: SpaceConfig = useMemo(
+    () => (isInbox ? INBOX_CONFIG : spaceConfig(space)),
+    [isInbox, space]
+  );
+
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setError(null);
+      setNotFound(false);
+      // Validate a real space up-front so we can title the page and show a
+      // "not found" state for stale/deleted links. RLS scopes it to the user.
+      if (!isInbox && effectiveSpaceId) {
+        const { data: sp, error: spErr } = await supabase
+          .from("todo_spaces")
+          .select("*")
+          .eq("id", effectiveSpaceId)
+          .maybeSingle();
+        if (cancelled) return;
+        if (spErr) {
+          setError(spErr.message);
+          setLoading(false);
+          return;
+        }
+        if (!sp) {
+          setNotFound(true);
+          setSpace(null);
+          setLoading(false);
+          return;
+        }
+        setSpace(sp as TodoSpace);
+      } else {
+        setSpace(null);
+      }
       // Materialise due recurrences once per mount (mirrors
       // FinanceTransactions) — before the select so today's generated
-      // occurrences appear in this load. Idempotent under StrictMode
-      // double-effects via the (recurrence_id, recurrence_due_on) index.
+      // occurrences appear in this load. It runs globally; each generated
+      // todo carries its recurrence's space_id, so the scoped fetch below
+      // naturally surfaces only this space's due todos. Idempotent under
+      // StrictMode double-effects via the (recurrence_id, recurrence_due_on) index.
       await materialiseDueTodoRecurrences(supabase, user.id);
-      const { data, error } = await supabase
+      const base = supabase
         .from("todos")
         .select("*")
         .order("created_at", { ascending: false });
+      const scoped = isInbox
+        ? base.is("space_id", null)
+        : base.eq("space_id", effectiveSpaceId);
+      const { data, error } = await scoped;
       if (cancelled) return;
       if (error) setError(error.message);
       else setTodos(data ?? []);
@@ -89,11 +157,14 @@ export function TodosPage() {
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user, spaceId, isInbox, effectiveSpaceId]);
 
   async function handleSave(input: TicketDraft) {
     if (!user) return;
     setError(null);
+    // is_done stays in sync with status on every write (insert + edit) so the
+    // agenda / dashboard / weekly-review, which read is_done, stay correct.
+    const nextIsDone = statusIsDone(input.status, config.statuses);
     if (editing) {
       // Note: recurrence_id / recurrence_due_on are intentionally NOT in the
       // patch — editing a materialised todo must preserve its repeat link.
@@ -103,6 +174,12 @@ export function TodosPage() {
         priority: input.priority,
         due_at: input.due_at,
         estimated_min: input.estimated_min,
+        task_date: input.task_date,
+        category: input.category,
+        status: input.status,
+        is_done: nextIsDone,
+        tags: input.tags,
+        custom: input.custom,
       };
       // Optimistic patch so the dialog can close immediately.
       const prev = todos;
@@ -152,6 +229,8 @@ export function TodosPage() {
             // The first occurrence is inserted right below — anchor the
             // materialiser past it so it isn't regenerated.
             last_materialised_on: occurrence,
+            // Future occurrences land in this space too.
+            space_id: effectiveSpaceId,
           });
           recurrenceId = rec.id;
           recurrenceDueOn = occurrence;
@@ -169,8 +248,15 @@ export function TodosPage() {
           priority: input.priority,
           due_at: dueAt,
           estimated_min: input.estimated_min,
+          task_date: input.task_date,
           recurrence_id: recurrenceId,
           recurrence_due_on: recurrenceDueOn,
+          space_id: effectiveSpaceId,
+          category: input.category,
+          status: input.status,
+          is_done: nextIsDone,
+          tags: input.tags,
+          custom: input.custom,
         })
         .select()
         .single();
@@ -187,10 +273,28 @@ export function TodosPage() {
 
   async function toggleDone(todo: Todo) {
     const next = !todo.is_done;
-    setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, is_done: next } : t)));
-    const { error } = await supabase.from("todos").update({ is_done: next }).eq("id", todo.id);
+    // Keep status in step with the checkbox: pick a "done" status when
+    // checking and an open one when unchecking, falling back to the canonical
+    // 'done'/'todo' keys so is_done and status never drift.
+    const doneStatus = config.statuses.find((s) => statusIsDone(s.key, config.statuses));
+    const openStatus = config.statuses.find((s) => !statusIsDone(s.key, config.statuses));
+    const nextStatus = next
+      ? doneStatus?.key ?? "done"
+      : openStatus?.key ?? DEFAULT_STATUS_KEY;
+    const prevStatus = todo.status;
+    setTodos((prev) =>
+      prev.map((t) => (t.id === todo.id ? { ...t, is_done: next, status: nextStatus } : t))
+    );
+    const { error } = await supabase
+      .from("todos")
+      .update({ is_done: next, status: nextStatus })
+      .eq("id", todo.id);
     if (error) {
-      setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, is_done: !next } : t)));
+      setTodos((prev) =>
+        prev.map((t) =>
+          t.id === todo.id ? { ...t, is_done: !next, status: prevStatus } : t
+        )
+      );
       setError(error.message);
     }
   }
@@ -241,10 +345,23 @@ export function TodosPage() {
 
   const visible = useMemo(
     () =>
-      todos.filter((t) =>
-        filter === "active" ? !t.is_done : filter === "done" ? t.is_done : true
-      ),
-    [todos, filter]
+      todos.filter((t) => {
+        const passDone =
+          filter === "active" ? !t.is_done : filter === "done" ? t.is_done : true;
+        const passCategory =
+          categoryFilter.length === 0 || categoryFilter.includes(t.category ?? "");
+        const passStatus =
+          statusFilter.length === 0 ||
+          statusFilter.includes(t.status ?? DEFAULT_STATUS_KEY);
+        // Filter by task date, falling back to the created date for older
+        // tickets that predate the task_date field.
+        const effectiveDate = t.task_date ?? ymd(new Date(t.created_at));
+        const passRange =
+          (!rangeFrom || effectiveDate >= rangeFrom) &&
+          (!rangeTo || effectiveDate <= rangeTo);
+        return passDone && passCategory && passStatus && passRange;
+      }),
+    [todos, filter, categoryFilter, statusFilter, rangeFrom, rangeTo]
   );
 
   /** Active tickets: sort by overdue first, then priority, then due date, then creation. */
@@ -274,10 +391,41 @@ export function TodosPage() {
     [visible]
   );
 
+  if (notFound) {
+    return (
+      <div className="space-y-4">
+        <Link
+          to="/todos"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" /> Back to spaces
+        </Link>
+        <EmptyState
+          icon={<ListTodo className="h-7 w-7" />}
+          title="Space not found"
+          description="This space may have been deleted. Its tickets, if any, were moved to the Inbox."
+          action={
+            <Link to="/todos">
+              <Button>Back to spaces</Button>
+            </Link>
+          }
+        />
+      </div>
+    );
+  }
+
+  const pageTitle = isInbox ? "Inbox" : space?.name ?? "Tickets";
+
   return (
     <div className="space-y-6">
+      <Link
+        to="/todos"
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="h-4 w-4" /> Back to spaces
+      </Link>
       <PageHeader
-        title="Tickets"
+        title={pageTitle}
         icon={<ListTodo className="h-5 w-5" />}
         description={
           counts.all === 0
@@ -323,6 +471,13 @@ export function TodosPage() {
             >
               <Repeat className="h-4 w-4" /> Repeats
             </Button>
+            {!isInbox && effectiveSpaceId && (
+              <Link to={`/todos/${effectiveSpaceId}/settings`}>
+                <Button type="button" variant="outline" title="Space settings">
+                  <Settings className="h-4 w-4" /> Settings
+                </Button>
+              </Link>
+            )}
             <Button onClick={startAdd} disabled={loading}>
               <Plus className="h-4 w-4" /> Add Ticket
             </Button>
@@ -373,6 +528,61 @@ export function TodosPage() {
             </button>
           ))}
         </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1">
+            <input
+              type="date"
+              aria-label="From date"
+              value={rangeFrom}
+              max={rangeTo || undefined}
+              onChange={(e) => setRangeFrom(e.target.value)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs [color-scheme:dark] cursor-pointer"
+            />
+            <span className="text-xs text-muted-foreground">→</span>
+            <input
+              type="date"
+              aria-label="To date"
+              value={rangeTo}
+              min={rangeFrom || undefined}
+              onChange={(e) => setRangeTo(e.target.value)}
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs [color-scheme:dark] cursor-pointer"
+            />
+            {(rangeFrom || rangeTo) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setRangeFrom("");
+                  setRangeTo("");
+                }}
+                className="text-xs text-primary hover:underline px-1"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {config.categories.length > 0 && (
+            <MultiSelectFilter
+              label="categories"
+              options={config.categories.map((c) => ({
+                key: c.key,
+                label: c.label,
+                color: c.color,
+              }))}
+              selected={categoryFilter}
+              onChange={setCategoryFilter}
+            />
+          )}
+          <MultiSelectFilter
+            label="statuses"
+            options={config.statuses.map((s) => ({
+              key: s.key,
+              label: s.label,
+              color: s.color,
+            }))}
+            selected={statusFilter}
+            onChange={setStatusFilter}
+          />
+        </div>
         {counts.done > 0 && (
           <Button
             type="button"
@@ -407,6 +617,7 @@ export function TodosPage() {
                   <TicketCard
                     key={t.id}
                     todo={t}
+                    config={config}
                     onToggle={toggleDone}
                     onEdit={startEdit}
                     onDelete={deleteTodo}
@@ -422,6 +633,7 @@ export function TodosPage() {
                   <TicketCard
                     key={t.id}
                     todo={t}
+                    config={config}
                     onToggle={toggleDone}
                     onEdit={startEdit}
                     onDelete={deleteTodo}
@@ -436,6 +648,7 @@ export function TodosPage() {
       <TicketDialog
         open={dialogOpen}
         editing={editing}
+        config={config}
         onClose={() => {
           setDialogOpen(false);
           setEditing(null);
@@ -445,6 +658,8 @@ export function TodosPage() {
 
       <ManageRepeatsDialog
         open={repeatsOpen}
+        isInbox={isInbox}
+        spaceId={effectiveSpaceId}
         onClose={() => setRepeatsOpen(false)}
         onDeleted={(id) =>
           // The FK is `on delete set null` — existing tickets survive, so
@@ -462,10 +677,16 @@ export function TodosPage() {
 
 function ManageRepeatsDialog({
   open,
+  isInbox,
+  spaceId,
   onClose,
   onDeleted,
 }: {
   open: boolean;
+  /** True when viewing the Inbox (space_id IS NULL). */
+  isInbox: boolean;
+  /** Effective space id for the current page (null = Inbox). */
+  spaceId: string | null;
   onClose: () => void;
   onDeleted: (recurrenceId: string) => void;
 }) {
@@ -483,7 +704,12 @@ function ManageRepeatsDialog({
       setErr(null);
       try {
         const rows = await listTodoRecurrences(supabase, user.id);
-        if (!cancelled) setRecurrences(rows);
+        // Scope to this space just like the ticket list — Inbox shows the
+        // space-less recurrences, a real space shows only its own.
+        const scoped = rows.filter((r) =>
+          isInbox ? (r.space_id ?? null) === null : r.space_id === spaceId
+        );
+        if (!cancelled) setRecurrences(scoped);
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
       }
@@ -492,7 +718,7 @@ function ManageRepeatsDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, user]);
+  }, [open, user, isInbox, spaceId]);
 
   async function handleDelete(rec: TodoRecurrence) {
     const title = rec.template_json.title;
@@ -569,6 +795,104 @@ function ManageRepeatsDialog({
         </div>
       </div>
     </Dialog>
+  );
+}
+
+// ---------- multi-select filter ----------
+
+/** Checkbox-dropdown filter. Empty `selected` = no filter (show all). */
+function MultiSelectFilter({
+  label,
+  options,
+  selected,
+  onChange,
+}: {
+  label: string;
+  options: Array<{ key: string; label: string; color?: string }>;
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const summary =
+    selected.length === 0
+      ? `All ${label}`
+      : `${selected.length} ${label.replace(/s$/, "")}${selected.length === 1 ? "" : "s"}`;
+
+  function toggle(key: string) {
+    onChange(
+      selected.includes(key)
+        ? selected.filter((k) => k !== key)
+        : [...selected, key]
+    );
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={cn(
+          "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-xs transition-colors",
+          selected.length > 0
+            ? "border-primary/50 bg-primary/10 text-foreground"
+            : "border-input bg-background text-muted-foreground hover:text-foreground"
+        )}
+      >
+        {summary}
+        <ChevronDown className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <>
+          <button
+            type="button"
+            aria-hidden
+            tabIndex={-1}
+            className="fixed inset-0 z-40 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div
+            role="listbox"
+            className="absolute right-0 z-50 mt-1 max-h-64 w-52 overflow-auto rounded-md border border-border bg-card py-1 text-xs shadow-md"
+          >
+            {options.length === 0 ? (
+              <div className="px-3 py-1.5 text-muted-foreground">None</div>
+            ) : (
+              options.map((o) => (
+                <label
+                  key={o.key}
+                  className="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-accent"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(o.key)}
+                    onChange={() => toggle(o.key)}
+                  />
+                  {o.color && (
+                    <span
+                      aria-hidden
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: o.color }}
+                    />
+                  )}
+                  <span className="truncate">{o.label}</span>
+                </label>
+              ))
+            )}
+            {selected.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onChange([])}
+                className="mt-1 w-full border-t border-border px-3 py-1.5 text-left text-primary hover:bg-accent"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -656,12 +980,15 @@ function localInputToIso(input: string): string | null {
 
 interface TicketCardProps {
   todo: Todo;
+  config: SpaceConfig;
   onToggle: (t: Todo) => void;
   onEdit: (t: Todo) => void;
   onDelete: (t: Todo) => void;
 }
 
-function TicketCard({ todo, onToggle, onEdit, onDelete }: TicketCardProps) {
+function TicketCard({ todo, config, onToggle, onEdit, onDelete }: TicketCardProps) {
+  const category = findCategory(todo.category, config.categories);
+  const status = findStatus(todo.status, config.statuses);
   const overdue = !todo.is_done && isOverdue(todo.due_at);
   const dueToday = !todo.is_done && isToday(todo.due_at);
   const accentClass = todo.is_done
@@ -743,6 +1070,30 @@ function TicketCard({ todo, onToggle, onEdit, onDelete }: TicketCardProps) {
               )}
 
               <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                {status && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium leading-tight whitespace-nowrap ring-1 ring-inset"
+                    style={{
+                      color: status.color,
+                      backgroundColor: `${status.color}1a`,
+                      // 1a ≈ 10% alpha; ring uses the same colour at ~30%.
+                      boxShadow: `inset 0 0 0 1px ${status.color}4d`,
+                    }}
+                  >
+                    {status.icon && <span aria-hidden>{status.icon}</span>}
+                    {status.label}
+                  </span>
+                )}
+                {category && (
+                  <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium leading-tight whitespace-nowrap ring-1 ring-inset ring-border">
+                    <span
+                      aria-hidden
+                      className="h-2 w-2 rounded-full"
+                      style={{ backgroundColor: category.color }}
+                    />
+                    {category.label}
+                  </span>
+                )}
                 <Badge variant={priorityBadgeVariant(todo.priority)}>
                   <Flag className="h-3 w-3" />
                   {todo.priority}
@@ -763,6 +1114,16 @@ function TicketCard({ todo, onToggle, onEdit, onDelete }: TicketCardProps) {
                       <CalendarClock className="h-3 w-3" />
                     )}
                     {formatDueLabel(todo.due_at)}
+                  </Badge>
+                )}
+                {todo.task_date && todo.task_date !== ymd() && (
+                  <Badge variant="outline" title="Task date">
+                    <CalendarClock className="h-3 w-3" />
+                    for{" "}
+                    {new Date(`${todo.task_date}T00:00:00`).toLocaleDateString([], {
+                      month: "short",
+                      day: "numeric",
+                    })}
                   </Badge>
                 )}
                 {todo.estimated_min != null && (
@@ -853,6 +1214,14 @@ type TicketDraft = {
   priority: TodoPriority;
   due_at: string | null;
   estimated_min: number | null;
+  /** The date the ticket is for (YYYY-MM-DD); separate from the due deadline. */
+  task_date: string | null;
+  /** Category key into the space config, or null for none. */
+  category: string | null;
+  /** Status key into the space config. */
+  status: string;
+  tags: string[];
+  custom: Record<string, unknown>;
   /** Only settable when creating (like finance's TransactionDialog). */
   recurrence: null | {
     frequency: Frequency;
@@ -866,22 +1235,35 @@ const FREQUENCIES: Frequency[] = ["daily", "weekly", "monthly", "yearly"];
 interface TicketDialogProps {
   open: boolean;
   editing: Todo | null;
+  config: SpaceConfig;
   onClose: () => void;
   onSave: (draft: TicketDraft) => Promise<void> | void;
 }
 
-function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
+function TicketDialog({ open, editing, config, onClose, onSave }: TicketDialogProps) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<TodoPriority>("medium");
   const [dueLocal, setDueLocal] = useState(""); // datetime-local string
   const [estimate, setEstimate] = useState("");
+  const [taskDate, setTaskDate] = useState(""); // YYYY-MM-DD, the date the ticket is for
+  const [category, setCategory] = useState<string>("");
+  const [status, setStatus] = useState<string>(DEFAULT_STATUS_KEY);
+  const [tagsInput, setTagsInput] = useState("");
+  const [custom, setCustom] = useState<Record<string, string>>({});
   const [showRecurrence, setShowRecurrence] = useState(false);
   const [frequency, setFrequency] = useState<Frequency>("daily");
   const [intervalN, setIntervalN] = useState("1");
   const [endOn, setEndOn] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Default status = first status flagged done:false, else the first one, else
+  // the canonical 'todo' key. Keeps a brand-new ticket "open".
+  const defaultStatusKey =
+    config.statuses.find((s) => !statusIsDone(s.key, config.statuses))?.key ??
+    config.statuses[0]?.key ??
+    DEFAULT_STATUS_KEY;
 
   useEffect(() => {
     if (!open) return;
@@ -891,18 +1273,47 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
       setPriority(editing.priority);
       setDueLocal(isoToLocalInput(editing.due_at));
       setEstimate(editing.estimated_min == null ? "" : String(editing.estimated_min));
+      setTaskDate(editing.task_date ?? "");
+      // Only keep the category if it still exists in the space config.
+      setCategory(
+        editing.category && config.categories.some((c) => c.key === editing.category)
+          ? editing.category
+          : ""
+      );
+      setStatus(
+        editing.status && config.statuses.some((s) => s.key === editing.status)
+          ? editing.status
+          : defaultStatusKey
+      );
+      setTagsInput((editing.tags ?? []).join(", "));
+      const seededCustom: Record<string, string> = {};
+      for (const f of config.customFields) {
+        const v = editing.custom?.[f.key];
+        seededCustom[f.key] = v == null ? "" : String(v);
+      }
+      setCustom(seededCustom);
     } else {
       setTitle("");
       setDescription("");
       setPriority("medium");
       setDueLocal("");
       setEstimate("");
+      setTaskDate(ymd()); // default new tickets to today
+      setCategory("");
+      setStatus(defaultStatusKey);
+      setTagsInput("");
+      const emptyCustom: Record<string, string> = {};
+      for (const f of config.customFields) emptyCustom[f.key] = "";
+      setCustom(emptyCustom);
     }
     setShowRecurrence(false);
     setFrequency("daily");
     setIntervalN("1");
     setEndOn("");
     setErr(null);
+    // config is intentionally excluded — reseeding on config identity changes
+    // would clobber in-progress edits; open/editing drive the reset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editing]);
 
   async function onSubmit(e: FormEvent) {
@@ -921,6 +1332,32 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
       }
       estMin = Math.round(n);
     }
+    // Build the custom-field payload, validating required + numeric fields.
+    const customPayload: Record<string, unknown> = {};
+    for (const f of config.customFields) {
+      const raw = (custom[f.key] ?? "").trim();
+      if (!raw) {
+        if (f.required) {
+          setErr(`"${f.label}" is required.`);
+          return;
+        }
+        continue;
+      }
+      if (f.type === "number") {
+        const n = Number(raw);
+        if (!Number.isFinite(n)) {
+          setErr(`"${f.label}" must be a number.`);
+          return;
+        }
+        customPayload[f.key] = n;
+      } else {
+        customPayload[f.key] = raw;
+      }
+    }
+    const tags = tagsInput
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
     setSaving(true);
     setErr(null);
     try {
@@ -930,6 +1367,11 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
         priority,
         due_at: localInputToIso(dueLocal),
         estimated_min: estMin,
+        task_date: taskDate || null,
+        category: category || null,
+        status,
+        tags,
+        custom: customPayload,
         recurrence:
           !editing && showRecurrence
             ? {
@@ -1010,6 +1452,83 @@ function TicketDialog({ open, editing, onClose, onSave }: TicketDialogProps) {
               placeholder="e.g. 30"
             />
           </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="ticket-category">Category</Label>
+            <Select
+              id="ticket-category"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              disabled={config.categories.length === 0}
+            >
+              <option value="">
+                {config.categories.length === 0 ? "No categories configured" : "None"}
+              </option>
+              {config.categories.map((c) => (
+                <option key={c.key} value={c.key}>
+                  {c.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ticket-status">Status</Label>
+            <Select
+              id="ticket-status"
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+            >
+              {config.statuses.map((s) => (
+                <option key={s.key} value={s.key}>
+                  {s.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="ticket-tags">Tags (comma-separated, optional)</Label>
+          <Input
+            id="ticket-tags"
+            value={tagsInput}
+            onChange={(e) => setTagsInput(e.target.value)}
+            placeholder="e.g. frontend, urgent"
+          />
+        </div>
+
+        {config.customFields.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {config.customFields.map((f) => (
+              <div key={f.key} className="space-y-1.5">
+                <Label htmlFor={`ticket-custom-${f.key}`}>
+                  {f.label}
+                  {f.required && <span className="text-destructive"> *</span>}
+                </Label>
+                <Input
+                  id={`ticket-custom-${f.key}`}
+                  type={f.type === "number" ? "number" : "text"}
+                  inputMode={f.type === "number" ? "decimal" : undefined}
+                  value={custom[f.key] ?? ""}
+                  onChange={(e) =>
+                    setCustom((c) => ({ ...c, [f.key]: e.target.value }))
+                  }
+                  required={f.required}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="space-y-1.5">
+          <Label htmlFor="ticket-taskdate">Task date</Label>
+          <DateField
+            id="ticket-taskdate"
+            value={taskDate}
+            onChange={setTaskDate}
+          />
         </div>
 
         <div className="space-y-1.5">

@@ -6,6 +6,8 @@ import { AuthPage } from "@/pages/Auth";
 import { HomePage } from "@/pages/Home";
 import { DailyRoutinePage } from "@/pages/DailyRoutine";
 import { TodosPage } from "@/pages/Todos";
+import { TodoSpacesPage } from "@/pages/TodoSpaces";
+import { TodoSpaceSettingsPage } from "@/pages/TodoSpaceSettings";
 import { GymPage } from "@/pages/Gym";
 import { MotivationPage } from "@/pages/Motivation";
 import { CodingTrackerPage } from "@/pages/CodingTracker";
@@ -26,6 +28,7 @@ import { PrepApplicationsPage } from "@/pages/PrepApplications";
 import { PrepInterviewsPage } from "@/pages/PrepInterviews";
 import { PrepStudyPage } from "@/pages/PrepStudy";
 import { PrepVaultPage } from "@/pages/PrepVault";
+import { FinanceRangeLayout } from "@/hooks/useFinanceRange";
 
 function ProtectedRoutes() {
   const { session, loading } = useAuth();
@@ -58,7 +61,9 @@ export default function App() {
               <Route path="/" element={<MotivationPage />} />
               <Route path="/dashboard" element={<HomePage />} />
               <Route path="/daily-routine" element={<DailyRoutinePage />} />
-              <Route path="/todos" element={<TodosPage />} />
+              <Route path="/todos" element={<TodoSpacesPage />} />
+              <Route path="/todos/:spaceId" element={<TodosPage />} />
+              <Route path="/todos/:spaceId/settings" element={<TodoSpaceSettingsPage />} />
               <Route path="/gym" element={<GymPage />} />
               <Route path="/coding-tracker" element={<CodingTrackerPage />} />
               <Route path="/today" element={<TodayPage />} />
@@ -73,10 +78,12 @@ export default function App() {
               <Route path="/motivation" element={<Navigate to="/" replace />} />
               <Route path="/health/period" element={<HealthPeriodPage />} />
               <Route path="/health/diabetes" element={<HealthDiabetesPage />} />
-              <Route path="/finance/transactions" element={<FinanceTransactionsPage />} />
-              <Route path="/finance/stats" element={<FinanceStatsPage />} />
-              <Route path="/finance/accounts" element={<FinanceAccountsPage />} />
-              <Route path="/finance/categories" element={<FinanceCategoriesPage />} />
+              <Route element={<FinanceRangeLayout />}>
+                <Route path="/finance/transactions" element={<FinanceTransactionsPage />} />
+                <Route path="/finance/stats" element={<FinanceStatsPage />} />
+                <Route path="/finance/accounts" element={<FinanceAccountsPage />} />
+                <Route path="/finance/categories" element={<FinanceCategoriesPage />} />
+              </Route>
               <Route path="/finance" element={<Navigate to="/finance/transactions" replace />} />
               <Route path="/settings/profile" element={<SettingsProfilePage />} />
               <Route path="/settings/appearance" element={<SettingsAppearancePage />} />

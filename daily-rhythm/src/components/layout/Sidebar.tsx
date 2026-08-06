@@ -61,7 +61,6 @@ const PRIMARY: NavItem[] = [
   { to: "/todos", label: "Todos", icon: ListTodo },
   { to: "/focus", label: "Focus", icon: Timer },
   { to: "/gym", label: "Gym Workout", icon: Dumbbell },
-  { to: "/coding-tracker", label: "Coding Tracker", icon: Code2 },
   { to: "/weekly-review", label: "Weekly Review", icon: CalendarCheck2 },
 ];
 
@@ -69,6 +68,7 @@ const PREP: NavGroup = {
   label: "Job Prep",
   icon: Briefcase,
   children: [
+    { to: "/coding-tracker", label: "Coding Tracker", icon: Code2 },
     { to: "/prep/roadmap", label: "Roadmap", icon: MapIcon },
     { to: "/prep/applications", label: "Applications", icon: KanbanSquare },
     { to: "/prep/interviews", label: "Mock Interviews", icon: MessagesSquare },

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
   Check,
@@ -11,9 +11,11 @@ import {
   X,
 } from "lucide-react";
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
-  Line,
-  LineChart,
+  LabelList,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -24,12 +26,13 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { DateField } from "@/components/ui/DateField";
+import { Dialog } from "@/components/ui/Dialog";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
-import { addDays, DAY_LABELS, parseYmd, startOfWeek, weekDates, ymd } from "@/lib/dates";
+import { addDays, DAY_LABELS, parseYmd, startOfWeek, ymd } from "@/lib/dates";
 import {
   formatMinutes,
   PREP_CHART_COLORS,
@@ -38,9 +41,39 @@ import {
 import type { StudySession, UserSettings } from "@/types";
 import { cn } from "@/lib/utils";
 
+type StudyPeriod = "day" | "week" | "month" | "year";
+
+const MONTHS_SHORT = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/** Inclusive [start, end] Date bounds for the given period around `anchor`. */
+function periodBounds(mode: StudyPeriod, anchor: Date): { start: Date; end: Date } {
+  if (mode === "day") {
+    const start = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+    return { start, end: start };
+  }
+  if (mode === "week") {
+    const start = startOfWeek(anchor);
+    return { start, end: addDays(start, 6) };
+  }
+  if (mode === "month") {
+    return {
+      start: new Date(anchor.getFullYear(), anchor.getMonth(), 1),
+      end: new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0),
+    };
+  }
+  return {
+    start: new Date(anchor.getFullYear(), 0, 1),
+    end: new Date(anchor.getFullYear(), 11, 31),
+  };
+}
+
 export function PrepStudyPage() {
   const { user } = useAuth();
-  const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek());
+  const [periodMode, setPeriodMode] = useState<StudyPeriod>("week");
+  const [anchor, setAnchor] = useState<Date>(() => new Date());
   const [sessions, setSessions] = useState<StudySession[]>([]);
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [knownTopics, setKnownTopics] = useState<string[]>([]);
@@ -54,13 +87,22 @@ export function PrepStudyPage() {
   const [addNote, setAddNote] = useState("");
   const [adding, setAdding] = useState(false);
 
+  // Edit-session dialog
+  const [editing, setEditing] = useState<StudySession | null>(null);
+  const [editDate, setEditDate] = useState("");
+  const [editTopic, setEditTopic] = useState("");
+  const [editMinutes, setEditMinutes] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+
   // Weekly target inline editing
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetHours, setTargetHours] = useState("");
   const [savingTarget, setSavingTarget] = useState(false);
 
-  const weekStartYmd = ymd(weekStart);
-  const weekEndYmd = ymd(addDays(weekStart, 6));
+  const bounds = useMemo(() => periodBounds(periodMode, anchor), [periodMode, anchor]);
+  const rangeStartYmd = ymd(bounds.start);
+  const rangeEndYmd = ymd(bounds.end);
 
   useEffect(() => {
     if (!user) return;
@@ -71,8 +113,8 @@ export function PrepStudyPage() {
         supabase
           .from("study_sessions")
           .select("*")
-          .gte("studied_on", weekStartYmd)
-          .lte("studied_on", weekEndYmd)
+          .gte("studied_on", rangeStartYmd)
+          .lte("studied_on", rangeEndYmd)
           .order("studied_on")
           .order("created_at"),
         supabase.from("user_settings").select("*").maybeSingle(),
@@ -103,7 +145,7 @@ export function PrepStudyPage() {
     return () => {
       cancelled = true;
     };
-  }, [user, weekStartYmd, weekEndYmd]);
+  }, [user, rangeStartYmd, rangeEndYmd]);
 
   async function handleQuickAdd(e: FormEvent) {
     e.preventDefault();
@@ -138,7 +180,7 @@ export function PrepStudyPage() {
     }
     if (data) {
       const row = data as StudySession;
-      if (row.studied_on >= weekStartYmd && row.studied_on <= weekEndYmd) {
+      if (row.studied_on >= rangeStartYmd && row.studied_on <= rangeEndYmd) {
         setSessions((ss) =>
           [...ss, row].sort(
             (a, b) =>
@@ -170,6 +212,67 @@ export function PrepStudyPage() {
     }
   }
 
+  function openEdit(s: StudySession) {
+    setError(null);
+    setEditing(s);
+    setEditDate(s.studied_on);
+    setEditTopic(s.topic);
+    setEditMinutes(String(s.minutes));
+    setEditNote(s.notes ?? "");
+  }
+
+  async function saveEdit(e: FormEvent) {
+    e.preventDefault();
+    if (!editing || savingEdit) return;
+    const topic = editTopic.trim();
+    const minutes = Math.round(Number(editMinutes));
+    if (!topic) {
+      setError("Topic is required.");
+      return;
+    }
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) {
+      setError("Minutes must be between 1 and 1440.");
+      return;
+    }
+    setSavingEdit(true);
+    setError(null);
+    const { data, error: err } = await supabase
+      .from("study_sessions")
+      .update({
+        studied_on: editDate || editing.studied_on,
+        topic,
+        minutes,
+        notes: editNote.trim() ? editNote.trim() : null,
+      })
+      .eq("id", editing.id)
+      .select()
+      .single();
+    setSavingEdit(false);
+    if (err) {
+      setError(err.message);
+      return;
+    }
+    if (data) {
+      const row = data as StudySession;
+      setSessions((ss) => {
+        const rest = ss.filter((x) => x.id !== row.id);
+        // Keep it visible only if it still falls in the selected period.
+        if (row.studied_on >= rangeStartYmd && row.studied_on <= rangeEndYmd) {
+          return [...rest, row].sort(
+            (a, b) =>
+              a.studied_on.localeCompare(b.studied_on) ||
+              a.created_at.localeCompare(b.created_at)
+          );
+        }
+        return rest;
+      });
+      setKnownTopics((ts) =>
+        ts.some((t) => t.toLowerCase() === topic.toLowerCase()) ? ts : [topic, ...ts]
+      );
+    }
+    setEditing(null);
+  }
+
   async function saveTarget() {
     if (!user || savingTarget) return;
     const hours = Number(targetHours);
@@ -196,33 +299,68 @@ export function PrepStudyPage() {
     setEditingTarget(false);
   }
 
+  // The stored target is weekly; scale it to the selected period for the goal.
   const targetMin = settings?.weekly_study_target_min ?? 0;
+  const periodDayCount =
+    Math.round((bounds.end.getTime() - bounds.start.getTime()) / 86_400_000) + 1;
+  const periodTargetMin =
+    targetMin > 0 ? Math.round((targetMin * periodDayCount) / 7) : 0;
+
   const totalMin = useMemo(
     () => sessions.reduce((s, x) => s + x.minutes, 0),
     [sessions]
   );
 
-  /** Burn-up chart: cumulative minutes Mon..Sun vs flat target line. */
-  const burnUp = useMemo(() => {
-    const days = weekDates(weekStart);
-    const today = ymd();
+  /** Per-bucket study minutes — each bar is that bucket's OWN total, not a
+   *  running cumulative. Week → per weekday, Month → per day-of-month,
+   *  Year → per month, Day → per session. */
+  const chartData = useMemo(() => {
+    if (periodMode === "year") {
+      const perMonth = new Array(12).fill(0);
+      for (const s of sessions) {
+        perMonth[parseYmd(s.studied_on).getMonth()] += s.minutes;
+      }
+      return perMonth.map((minutes, m) => ({ label: MONTHS_SHORT[m], minutes }));
+    }
+    if (periodMode === "day") {
+      const dayKey = ymd(bounds.start);
+      return sessions
+        .filter((s) => s.studied_on === dayKey)
+        .slice()
+        .sort((a, b) => a.created_at.localeCompare(b.created_at))
+        .map((s) => ({
+          label: new Date(s.created_at).toLocaleTimeString([], {
+            hour: "numeric",
+            minute: "2-digit",
+          }),
+          minutes: s.minutes,
+        }));
+    }
     const perDay = new Map<string, number>();
     for (const s of sessions) {
       perDay.set(s.studied_on, (perDay.get(s.studied_on) ?? 0) + s.minutes);
     }
-    let cum = 0;
-    return days.map((d, i) => {
-      const key = ymd(d);
-      cum += perDay.get(key) ?? 0;
-      // Stop the studied line at today for the current week.
-      const future = key > today;
-      return {
-        label: DAY_LABELS[i],
-        studied: future ? null : cum,
-        target: targetMin > 0 ? targetMin : null,
-      };
-    });
-  }, [sessions, weekStart, targetMin]);
+    const points: Array<{ label: string; minutes: number }> = [];
+    for (let i = 0; i < periodDayCount; i++) {
+      const d = addDays(bounds.start, i);
+      points.push({
+        label: periodMode === "week" ? DAY_LABELS[i] : String(d.getDate()),
+        minutes: perDay.get(ymd(d)) ?? 0,
+      });
+    }
+    return points;
+  }, [sessions, periodMode, bounds, periodDayCount]);
+
+  // Per-bucket reference target: daily for day/week/month, monthly for year.
+  const perBucketTargetMin =
+    targetMin > 0
+      ? periodMode === "year"
+        ? Math.round((targetMin * 52) / 12)
+        : Math.round(targetMin / 7)
+      : 0;
+
+  // Thin out X-axis labels on the busier month view.
+  const xTickInterval = periodMode === "month" ? 2 : 0;
 
   /** Top 5 topics this week by total minutes. */
   const topTopics = useMemo(() => {
@@ -247,14 +385,64 @@ export function PrepStudyPage() {
     return [...map.entries()].sort((a, b) => b[0].localeCompare(a[0]));
   }, [sessions]);
 
-  const isCurrentWeek = weekStartYmd === ymd(startOfWeek());
-  const weekLabel = `${parseYmd(weekStartYmd).toLocaleDateString([], {
-    month: "short",
-    day: "numeric",
-  })} – ${parseYmd(weekEndYmd).toLocaleDateString([], {
-    month: "short",
-    day: "numeric",
-  })}`;
+  const now = new Date();
+  const isCurrent =
+    periodMode === "day"
+      ? rangeStartYmd === ymd(now)
+      : periodMode === "week"
+      ? rangeStartYmd === ymd(startOfWeek(now))
+      : periodMode === "month"
+      ? anchor.getFullYear() === now.getFullYear() &&
+        anchor.getMonth() === now.getMonth()
+      : anchor.getFullYear() === now.getFullYear();
+
+  const periodLabel =
+    periodMode === "day"
+      ? isCurrent
+        ? "Today"
+        : anchor.toLocaleDateString([], {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+          })
+      : isCurrent
+      ? `This ${periodMode}`
+      : periodMode === "week"
+      ? `${parseYmd(rangeStartYmd).toLocaleDateString([], {
+          month: "short",
+          day: "numeric",
+        })} – ${parseYmd(rangeEndYmd).toLocaleDateString([], {
+          month: "short",
+          day: "numeric",
+        })}`
+      : periodMode === "month"
+      ? anchor.toLocaleDateString([], { month: "long", year: "numeric" })
+      : String(anchor.getFullYear());
+
+  function shiftPeriod(dir: -1 | 1) {
+    setAnchor((a) => {
+      if (periodMode === "day") return addDays(a, dir);
+      if (periodMode === "week") return addDays(a, dir * 7);
+      if (periodMode === "month") return new Date(a.getFullYear(), a.getMonth() + dir, 1);
+      return new Date(a.getFullYear() + dir, a.getMonth(), 1);
+    });
+  }
+
+  // Day-mode: clicking the label opens a native date picker to jump directly.
+  const dayInputRef = useRef<HTMLInputElement>(null);
+  function openDayPicker() {
+    const el = dayInputRef.current;
+    if (!el) return;
+    if (typeof el.showPicker === "function") {
+      try {
+        el.showPicker();
+        return;
+      } catch {
+        /* not user-initiated in some browsers — fall through to focus */
+      }
+    }
+    el.focus();
+  }
 
   return (
     <div className="space-y-6">
@@ -263,47 +451,102 @@ export function PrepStudyPage() {
         icon={<BookOpen className="h-5 w-5" />}
         description={
           totalMin === 0
-            ? "Log study sessions and burn up to the weekly target."
-            : `${formatMinutes(totalMin)} logged this week${
-                targetMin > 0
-                  ? ` · ${Math.min(100, Math.round((totalMin / targetMin) * 100))}% of target`
+            ? "Log study sessions and burn up to your target."
+            : `${formatMinutes(totalMin)} logged this ${periodMode}${
+                periodTargetMin > 0
+                  ? ` · ${Math.min(
+                      100,
+                      Math.round((totalMin / periodTargetMin) * 100)
+                    )}% of target`
                   : ""
               }.`
         }
       />
 
-      {/* Week switcher + weekly target */}
+      {/* Period mode toggle + navigation + weekly target */}
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        {/* Week / Month / Year toggle */}
+        <div className="inline-flex items-center gap-0.5 rounded-md border bg-card p-0.5">
+          {(["day", "week", "month", "year"] as StudyPeriod[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setPeriodMode(m)}
+              aria-pressed={periodMode === m}
+              className={cn(
+                "rounded-sm px-3 py-1 text-xs font-medium capitalize transition-colors",
+                periodMode === m
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+
         <div className="inline-flex items-center gap-1 rounded-md border bg-card p-0.5">
           <button
             type="button"
-            onClick={() => setWeekStart((w) => addDays(w, -7))}
-            aria-label="Previous week"
+            onClick={() => shiftPeriod(-1)}
+            aria-label={`Previous ${periodMode}`}
             className="rounded-sm p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
-          <span className="px-2 text-sm font-medium tabular-nums">
-            {isCurrentWeek ? "This week" : weekLabel}
-          </span>
+          {periodMode === "day" ? (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={openDayPicker}
+                className="px-2 text-sm font-medium tabular-nums min-w-[7rem] text-center hover:text-primary transition-colors"
+                title="Pick a date"
+              >
+                {periodLabel}
+              </button>
+              <input
+                ref={dayInputRef}
+                type="date"
+                value={rangeStartYmd}
+                onChange={(e) => {
+                  if (e.target.value) setAnchor(parseYmd(e.target.value));
+                }}
+                aria-label="Pick a date"
+                tabIndex={-1}
+                className="sr-only"
+              />
+            </div>
+          ) : (
+            <span className="px-2 text-sm font-medium tabular-nums min-w-[7rem] text-center">
+              {periodLabel}
+            </span>
+          )}
           <button
             type="button"
-            onClick={() => setWeekStart((w) => addDays(w, 7))}
-            aria-label="Next week"
+            onClick={() => shiftPeriod(1)}
+            aria-label={`Next ${periodMode}`}
             className="rounded-sm p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             <ChevronRight className="h-4 w-4" />
           </button>
         </div>
-        {!isCurrentWeek && (
+        {!isCurrent && (
           <button
             type="button"
-            onClick={() => setWeekStart(startOfWeek())}
+            onClick={() => setAnchor(new Date())}
             className="text-xs text-primary hover:underline text-left"
           >
-            Back to this week
+            {periodMode === "day" ? "Back to today" : `Back to this ${periodMode}`}
           </button>
         )}
+
+        {/* Total time logged for the selected period. */}
+        <span className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1 text-sm">
+          <span className="text-muted-foreground">Total</span>
+          <span className="font-semibold tabular-nums">
+            {formatMinutes(totalMin)}
+          </span>
+        </span>
 
         <div className="sm:ml-auto flex items-center gap-2 text-sm">
           <Target className="h-4 w-4 text-primary" />
@@ -415,7 +658,6 @@ export function PrepStudyPage() {
                 type="number"
                 min={1}
                 max={1440}
-                step={5}
                 inputMode="numeric"
                 value={addMinutes}
                 onChange={(e) => setAddMinutes(e.target.value)}
@@ -450,14 +692,16 @@ export function PrepStudyPage() {
           <Card>
             <CardContent className="p-4 h-[240px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={burnUp} margin={{ top: 8, right: 12, left: -10, bottom: 0 }}>
+                <BarChart data={chartData} margin={{ top: 8, right: 12, left: -10, bottom: 0 }}>
                   <CartesianGrid
                     strokeDasharray="3 3"
                     stroke={PREP_CHART_COLORS.slate}
                     strokeOpacity={0.2}
+                    vertical={false}
                   />
                   <XAxis
                     dataKey="label"
+                    interval={xTickInterval}
                     tick={{ fontSize: 11, fill: PREP_CHART_COLORS.slate }}
                     tickLine={false}
                     axisLine={false}
@@ -470,32 +714,32 @@ export function PrepStudyPage() {
                     width={52}
                   />
                   <Tooltip
-                    formatter={(v: number, name: string) => [
-                      formatMinutes(v),
-                      name === "studied" ? "Studied (cumulative)" : "Weekly target",
-                    ]}
+                    cursor={{ fill: PREP_CHART_COLORS.slate, fillOpacity: 0.1 }}
+                    formatter={(v: number) => [formatMinutes(v), "Studied"]}
                     wrapperStyle={{ fontSize: "12px" }}
                   />
-                  <Line
-                    type="monotone"
-                    dataKey="studied"
-                    stroke={PREP_CHART_COLORS.primary}
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: PREP_CHART_COLORS.primary, strokeWidth: 0 }}
-                    activeDot={{ r: 5 }}
-                  />
-                  {targetMin > 0 && (
-                    <Line
-                      type="monotone"
-                      dataKey="target"
+                  {perBucketTargetMin > 0 && (
+                    <ReferenceLine
+                      y={perBucketTargetMin}
                       stroke={PREP_CHART_COLORS.slate}
-                      strokeWidth={1.5}
                       strokeDasharray="6 4"
-                      dot={false}
-                      activeDot={false}
                     />
                   )}
-                </LineChart>
+                  <Bar
+                    dataKey="minutes"
+                    fill={PREP_CHART_COLORS.primary}
+                    radius={[3, 3, 0, 0]}
+                    maxBarSize={44}
+                  >
+                    <LabelList
+                      dataKey="minutes"
+                      position="top"
+                      formatter={(v: number) => (v > 0 ? formatMinutes(v) : "")}
+                      style={{ fontSize: 10, fill: "currentColor" }}
+                      className="fill-foreground"
+                    />
+                  </Bar>
+                </BarChart>
               </ResponsiveContainer>
             </CardContent>
           </Card>
@@ -505,7 +749,7 @@ export function PrepStudyPage() {
             <Card>
               <CardContent className="p-4 space-y-3">
                 <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Top topics this week
+                  Top topics this {periodMode}
                 </h3>
                 {topTopics.map(([topic, min], i) => {
                   const max = topTopics[0][1];
@@ -536,7 +780,7 @@ export function PrepStudyPage() {
           {sessions.length === 0 ? (
             <EmptyState
               icon={<BookOpen className="h-7 w-7" />}
-              title={isCurrentWeek ? "Nothing logged this week yet" : "Nothing logged this week"}
+              title={`Nothing logged this ${periodMode}${isCurrent ? " yet" : ""}`}
               description="Use the quick-add row above to log a study session in seconds."
             />
           ) : (
@@ -578,18 +822,24 @@ export function PrepStudyPage() {
                                     — {s.notes}
                                   </span>
                                 )}
-                                <button
-                                  type="button"
-                                  onClick={() => void handleDelete(s)}
-                                  aria-label={`Delete ${s.topic} session`}
-                                  className={cn(
-                                    "ml-auto shrink-0 rounded-md p-1.5 text-muted-foreground",
-                                    "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity",
-                                    "hover:bg-destructive/10 hover:text-destructive"
-                                  )}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
+                                <div className="ml-auto shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                                  <button
+                                    type="button"
+                                    onClick={() => openEdit(s)}
+                                    aria-label={`Edit ${s.topic} session`}
+                                    className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDelete(s)}
+                                    aria-label={`Delete ${s.topic} session`}
+                                    className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
                               </li>
                             ))}
                         </ul>
@@ -602,6 +852,84 @@ export function PrepStudyPage() {
           )}
         </>
       )}
+
+      <Dialog
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title="Edit study session"
+      >
+        <form onSubmit={saveEdit} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="ed-date" className="text-xs">
+                Date
+              </Label>
+              <DateField
+                id="ed-date"
+                value={editDate}
+                onChange={setEditDate}
+                quickPicks={false}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ed-min" className="text-xs">
+                Minutes
+              </Label>
+              <Input
+                id="ed-min"
+                type="number"
+                min={1}
+                max={1440}
+                inputMode="numeric"
+                value={editMinutes}
+                onChange={(e) => setEditMinutes(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="ed-topic" className="text-xs">
+              Topic
+            </Label>
+            <Input
+              id="ed-topic"
+              list="st-topic-options"
+              value={editTopic}
+              onChange={(e) => setEditTopic(e.target.value)}
+              maxLength={200}
+              required
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="ed-note" className="text-xs">
+              Note (optional)
+            </Label>
+            <Input
+              id="ed-note"
+              value={editNote}
+              onChange={(e) => setEditNote(e.target.value)}
+              maxLength={500}
+              placeholder="What did you cover?"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setEditing(null)}
+              disabled={savingEdit}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={savingEdit || !editTopic.trim() || !editMinutes}
+            >
+              {savingEdit ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </div>
   );
 }

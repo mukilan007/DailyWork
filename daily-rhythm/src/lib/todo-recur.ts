@@ -35,6 +35,8 @@ export type TodoRecurrenceInput = {
   /** Set to the first occurrence's date when the caller inserts that todo
    *  itself, so materialisation doesn't regenerate it. */
   last_materialised_on: string | null;
+  /** Owning space; null = Inbox. Materialised todos inherit this. */
+  space_id?: string | null;
 };
 
 export async function listTodoRecurrences(
@@ -134,6 +136,8 @@ export async function materialiseDueTodoRecurrences(
         is_done: false,
         recurrence_id: r.id,
         recurrence_due_on: lastOccurrence,
+        // Land materialised todos in the recurrence's space (null = Inbox).
+        space_id: r.space_id ?? null,
       });
       cursor = nextDueDate(cursor, r.frequency, r.interval_n, anchorDay);
     }

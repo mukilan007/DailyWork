@@ -1,4 +1,4 @@
-import { ChangeEvent, useMemo, useRef } from "react";
+import { ChangeEvent, useRef } from "react";
 import { Calendar } from "lucide-react";
 import { ymd, addDays } from "@/lib/dates";
 import { cn } from "@/lib/utils";
@@ -40,15 +40,6 @@ export function DateField({
 
   const today = ymd();
   const yesterday = ymd(addDays(new Date(), -1));
-
-  const preview = useMemo(() => {
-    if (!value) return "";
-    const d = new Date(`${value}T00:00:00`);
-    if (Number.isNaN(d.getTime())) return "";
-    if (value === today) return "Today";
-    if (value === yesterday) return "Yesterday";
-    return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
-  }, [value, today, yesterday]);
 
   function openPicker() {
     const el = inputRef.current;
@@ -110,11 +101,6 @@ export function DateField({
             "disabled:cursor-not-allowed"
           )}
         />
-        {preview && (
-          <span className="pointer-events-none ml-auto text-xs text-muted-foreground tabular-nums">
-            {preview}
-          </span>
-        )}
       </div>
 
       {quickPicks && !disabled && (

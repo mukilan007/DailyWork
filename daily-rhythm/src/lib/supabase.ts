@@ -3,15 +3,31 @@ import { createClient } from "@supabase/supabase-js";
 const url = import.meta.env.VITE_SUPABASE_URL;
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-if (!url || !anonKey) {
-  throw new Error(
-    "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. Copy .env.example to .env and fill them in."
+/**
+ * Whether the Supabase client is configured via env vars. When false, we do
+ * NOT throw here — a top-level throw during module load crashes the entire app
+ * (white screen on every route, before React even mounts). Instead main.tsx
+ * checks this flag and renders a readable "add your .env" screen, and the
+ * client below is created with harmless placeholders so the import can't throw.
+ */
+export const isSupabaseConfigured = Boolean(url && anonKey);
+
+if (!isSupabaseConfigured) {
+  // Visible in the console for anyone debugging; the on-screen panel (main.tsx)
+  // is the primary signal.
+  console.error(
+    "[DailyWork] Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. " +
+      "Copy .env.example to .env and fill them in, then restart the dev server."
   );
 }
 
-export const supabase = createClient(url, anonKey, {
-  auth: { persistSession: true, autoRefreshToken: true },
-});
+export const supabase = createClient(
+  url || "https://placeholder.supabase.co",
+  anonKey || "placeholder-anon-key",
+  {
+    auth: { persistSession: true, autoRefreshToken: true },
+  }
+);
 
 /**
  * True if a PostgREST/Postgres error indicates that `column` doesn't exist on

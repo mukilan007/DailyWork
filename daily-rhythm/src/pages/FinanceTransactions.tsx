@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   Plus,
   Receipt,
@@ -15,7 +16,7 @@ import {
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
-import { Input } from "@/components/ui/Input";
+import { DateField } from "@/components/ui/DateField";
 import { Label } from "@/components/ui/Label";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -58,6 +59,7 @@ import {
 } from "@/components/finance/TransactionDialog";
 import { MonthSwitcher } from "@/components/finance/MonthSwitcher";
 import { ImportStatementDialog } from "@/components/finance/ImportStatementDialog";
+import { useFinanceRange } from "@/hooks/useFinanceRange";
 
 type Tab = "daily" | "calendar" | "monthly";
 type FilterMode = "month" | "range";
@@ -70,19 +72,22 @@ const TAB_LABEL: Record<Tab, string> = {
 
 export function FinanceTransactionsPage() {
   const { user } = useAuth();
-  const today = new Date();
-  const [year, setYear] = useState(today.getFullYear());
-  const [month, setMonth] = useState(today.getMonth());
   const [tab, setTab] = useState<Tab>("daily");
 
-  // Date filter — single month (default) or arbitrary date range.
-  const [filterMode, setFilterMode] = useState<FilterMode>("month");
-  const [rangeFrom, setRangeFrom] = useState<string>(
-    ymd(startOfMonth(today.getFullYear(), today.getMonth()))
-  );
-  const [rangeTo, setRangeTo] = useState<string>(
-    ymd(endOfMonth(today.getFullYear(), today.getMonth()))
-  );
+  // Date filter — shared across all Finance pages (Transactions ↔ Stats) via
+  // FinanceRangeProvider, so the selected month/range persists between them.
+  const {
+    filterMode,
+    setFilterMode,
+    year,
+    setYear,
+    month,
+    setMonth,
+    rangeFrom,
+    setRangeFrom,
+    rangeTo,
+    setRangeTo,
+  } = useFinanceRange();
 
   const [accounts, setAccounts] = useState<FinanceAccount[]>([]);
   const [categories, setCategories] = useState<FinanceCategory[]>([]);
@@ -1210,22 +1215,22 @@ function RangeFilter({
       <div className="grid grid-cols-1 sm:grid-cols-[1fr,1fr] gap-2">
         <div className="space-y-1">
           <Label htmlFor="tx-range-from">From</Label>
-          <Input
+          <DateField
             id="tx-range-from"
-            type="date"
             value={from}
             max={to}
-            onChange={(e) => onChange(e.target.value || from, to)}
+            quickPicks={false}
+            onChange={(next) => onChange(next || from, to)}
           />
         </div>
         <div className="space-y-1">
           <Label htmlFor="tx-range-to">To</Label>
-          <Input
+          <DateField
             id="tx-range-to"
-            type="date"
             value={to}
             min={from}
-            onChange={(e) => onChange(from, e.target.value || to)}
+            quickPicks={false}
+            onChange={(next) => onChange(from, next || to)}
           />
         </div>
       </div>
@@ -1263,6 +1268,8 @@ function DayDetailDialog({
   transactions,
   accountById,
   categoryById,
+  categories,
+  onInlineSave,
   onClose,
   onEdit,
   onDelete,
@@ -1271,6 +1278,13 @@ function DayDetailDialog({
   transactions: FinanceTransaction[];
   accountById: Map<string, FinanceAccount>;
   categoryById: Map<string, FinanceCategory>;
+  categories: FinanceCategory[];
+  onInlineSave: (
+    tx: FinanceTransaction,
+    patch: Partial<
+      Pick<FinanceTransaction, "note" | "amount_paise" | "category_id">
+    >
+  ) => Promise<boolean>;
   onClose: () => void;
   onEdit: (t: FinanceTransaction) => void;
   onDelete: (t: FinanceTransaction) => void;
@@ -1345,8 +1359,10 @@ function DayDetailDialog({
                       )?.name ?? null
                     : null
                 }
+                categories={categories}
                 onEdit={() => onEdit(r)}
                 onDelete={() => onDelete(r)}
+                onInlineSave={(patch) => onInlineSave(r, patch)}
               />
             ))}
           </ul>
@@ -1361,11 +1377,17 @@ function CalendarView({
   month,
   transactions,
   onDayClick,
+  minDay,
+  maxDay,
 }: {
   year: number;
   month: number;
   transactions: FinanceTransaction[];
   onDayClick: (key: string) => void;
+  /** Optional inclusive range bounds (YYYY-MM-DD). Days outside are dimmed
+   *  and non-clickable so range-mode navigation stays inside the window. */
+  minDay?: string;
+  maxDay?: string;
 }) {
   const grid = monthGrid(year, month);
   const byDay = useMemo(() => {
@@ -1403,15 +1425,20 @@ function CalendarView({
             const sums = byDay.get(key);
             const isWeekStart = d.getDay() === 0;
             const isWeekEnd = d.getDay() === 6;
+            // In range mode, days outside [minDay, maxDay] are not selectable.
+            const outOfRange =
+              (minDay && key < minDay) || (maxDay && key > maxDay);
             return (
               <button
                 key={key}
                 type="button"
                 onClick={() => onDayClick(key)}
+                disabled={!!outOfRange}
                 className={cn(
                   "min-h-[80px] border-r border-b last:border-r-0 p-1.5 text-xs text-left",
                   "hover:bg-accent/40 focus:outline-none focus:ring-1 focus:ring-ring",
-                  !inMonth && "opacity-30"
+                  (!inMonth || outOfRange) && "opacity-30",
+                  outOfRange && "cursor-not-allowed hover:bg-transparent"
                 )}
               >
                 <div
@@ -1497,9 +1524,93 @@ function MonthlyView({
   );
 }
 
+/**
+ * Monthly (year-style) view for an arbitrary date range. Shows one collapsible
+ * MonthRow per calendar month the range touches — across year boundaries too —
+ * with each month's totals computed from the in-range transactions only.
+ */
+function RangeMonthlyView({
+  from,
+  to,
+  transactions,
+}: {
+  from: string;
+  to: string;
+  transactions: FinanceTransaction[];
+}) {
+  // Ordered list of {year, month} keys the range spans (inclusive).
+  const months = useMemo(() => {
+    const f = parseYmd(from);
+    const t = parseYmd(to);
+    const out: Array<{ year: number; month: number }> = [];
+    let y = f.getFullYear();
+    let m = f.getMonth();
+    const endKey = t.getFullYear() * 12 + t.getMonth();
+    while (y * 12 + m <= endKey) {
+      out.push({ year: y, month: m });
+      m += 1;
+      if (m > 11) {
+        m = 0;
+        y += 1;
+      }
+    }
+    return out;
+  }, [from, to]);
+
+  const byMonth = useMemo(() => {
+    const m = new Map<
+      string,
+      { income: number; expense: number; rows: FinanceTransaction[] }
+    >();
+    for (const t of transactions) {
+      const d = parseYmd(t.occurred_on);
+      const key = `${d.getFullYear()}-${d.getMonth()}`;
+      const cur = m.get(key) ?? { income: 0, expense: 0, rows: [] };
+      cur.rows.push(t);
+      if (t.kind === "income") cur.income += t.amount_paise;
+      else if (t.kind === "expense") cur.expense += t.amount_paise;
+      m.set(key, cur);
+    }
+    return m;
+  }, [transactions]);
+
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  function toggle(key: string) {
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  return (
+    <div className="space-y-3">
+      {months.map(({ year, month }) => {
+        const key = `${year}-${month}`;
+        const agg = byMonth.get(key) ?? { income: 0, expense: 0, rows: [] };
+        return (
+          <MonthRow
+            key={key}
+            monthIndex={month}
+            year={year}
+            showYear
+            income={agg.income}
+            expense={agg.expense}
+            rows={agg.rows}
+            open={expanded.has(key)}
+            onToggle={() => toggle(key)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 function MonthRow({
   monthIndex,
   year,
+  showYear,
   income,
   expense,
   rows,
@@ -1508,6 +1619,9 @@ function MonthRow({
 }: {
   monthIndex: number;
   year: number;
+  /** Append the year to the month label — used by the range view, which can
+   *  span more than one year. */
+  showYear?: boolean;
   income: number;
   expense: number;
   rows: FinanceTransaction[];
@@ -1537,7 +1651,10 @@ function MonthRow({
               )}
             />
             <div>
-              <div className="font-semibold">{MONTH_LABEL[monthIndex]}</div>
+              <div className="font-semibold">
+                {MONTH_LABEL[monthIndex]}
+                {showYear ? ` ${year}` : ""}
+              </div>
               <div className="text-xs text-muted-foreground">
                 01/{String(monthIndex + 1).padStart(2, "0")} ~{" "}
                 {String(dim).padStart(2, "0")}/
