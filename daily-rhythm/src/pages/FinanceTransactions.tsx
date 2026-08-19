@@ -59,6 +59,7 @@ import {
 } from "@/components/finance/TransactionDialog";
 import { MonthSwitcher } from "@/components/finance/MonthSwitcher";
 import { ImportStatementDialog } from "@/components/finance/ImportStatementDialog";
+import { UncategorisedNudge } from "@/components/finance/UncategorisedNudge";
 import { useFinanceRange } from "@/hooks/useFinanceRange";
 
 type Tab = "daily" | "calendar" | "monthly";
@@ -346,6 +347,19 @@ export function FinanceTransactionsPage() {
     return true;
   }
 
+  /** Patch local state after the bulk auto-categoriser applies suggestions, so
+   *  the list reflects the new categories (and the nudge's count drops)
+   *  without a refetch. Only rows in the patch are touched. */
+  function handleApplied(updates: { id: string; category_id: string }[]) {
+    if (updates.length === 0) return;
+    const patch = new Map(updates.map((u) => [u.id, u.category_id]));
+    setTransactions((cur) =>
+      cur.map((t) =>
+        patch.has(t.id) ? { ...t, category_id: patch.get(t.id)! } : t
+      )
+    );
+  }
+
   const exportRows = useMemo(
     () => txToCsvRows(transactions, accounts, categories),
     [transactions, accounts, categories]
@@ -612,6 +626,16 @@ export function FinanceTransactionsPage() {
         <p className="text-sm text-rose-500" role="alert">
           {error}
         </p>
+      )}
+
+      {/* Gentle nudge: shown only when the loaded window has uncategorised
+          income/expense rows. Self-hides once none remain. */}
+      {!loading && (
+        <UncategorisedNudge
+          transactions={transactions}
+          categories={categories}
+          onApplied={handleApplied}
+        />
       )}
 
       {/* Tab content */}

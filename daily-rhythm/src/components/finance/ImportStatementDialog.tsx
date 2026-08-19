@@ -205,6 +205,12 @@ export function ImportStatementDialog({
     accountMode === "existing" ? !!accountId : true;
 
   const selectedCount = useMemo(() => rows.filter((r) => r.selected).length, [rows]);
+  // Enable drag-to-widen only when at least one description is long enough to
+  // be clipped in the default width — no point offering resize otherwise.
+  const hasWideRows = useMemo(
+    () => rows.some((r) => (r.description ?? "").length > 40),
+    [rows]
+  );
   const selectedTotal = useMemo(
     () =>
       rows
@@ -472,8 +478,13 @@ export function ImportStatementDialog({
       open={open}
       onClose={requestClose}
       title="Import bank statement"
-      description="Upload a PDF and review the parsed transactions before importing."
+      description={
+        hasWideRows
+          ? "Upload a PDF and review the parsed transactions before importing. Drag the dialog's bottom-right corner to widen and read full descriptions."
+          : "Upload a PDF and review the parsed transactions before importing."
+      }
       className="max-w-4xl"
+      resizable={hasWideRows}
       disableOutsideClose
     >
       {error && (
@@ -705,7 +716,10 @@ export function ImportStatementDialog({
 
           <div className="max-h-[50vh] overflow-y-auto rounded-md border">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-card border-b">
+              {/* Background must sit on the <th> cells (a <thead> background
+                  isn't painted under position:sticky in most browsers), and a
+                  stacking layer keeps scrolling rows from bleeding through. */}
+              <thead className="sticky top-0 z-20 border-b bg-card [&_th]:bg-card">
                 <tr className="text-left">
                   <th className="px-2 py-2 w-10">
                     <input

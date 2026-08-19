@@ -16,6 +16,10 @@ interface DialogProps {
    *  Use for flows where a stray outside click would destroy in-progress
    *  work (e.g. a half-reviewed statement import). */
   disableOutsideClose?: boolean;
+  /** When true, the panel can be drag-widened via a native resize grip at its
+   *  bottom-right corner (starts at ~56rem, up to 95vw). Purely additive —
+   *  callers enable it only when content benefits (e.g. wide table rows). */
+  resizable?: boolean;
 }
 
 export function Dialog({
@@ -26,6 +30,7 @@ export function Dialog({
   children,
   className,
   disableOutsideClose = false,
+  resizable = false,
 }: DialogProps) {
   useEffect(() => {
     if (!open) return;
@@ -54,7 +59,10 @@ export function Dialog({
       <div
         className={cn(
           "relative w-full max-w-lg rounded-xl border bg-card text-card-foreground shadow-lg",
-          className
+          className,
+          // Placed after `className` so its width/max-width win when enabled.
+          resizable &&
+            "w-[56rem] min-w-[22rem] max-w-[95vw] max-h-[90vh] resize-x overflow-auto"
         )}
         onClick={(e) => e.stopPropagation()}
       >

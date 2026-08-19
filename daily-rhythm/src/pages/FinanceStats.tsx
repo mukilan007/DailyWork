@@ -10,6 +10,7 @@ import {
   Pencil,
   PieChart as PieIcon,
   Plus,
+  Sparkles,
 } from "lucide-react";
 import {
   Cell,
@@ -31,14 +32,16 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
-import { ymd } from "@/lib/dates";
+import { ymd, parseYmd, addDays } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import type {
+  FinanceAccount,
   FinanceBudget,
   FinanceCategory,
   FinanceTransaction,
 } from "@/types";
 import {
+  daysInMonth,
   endOfMonth,
   formatINR,
   rupeesToPaise,
@@ -47,7 +50,14 @@ import {
   sliceByTopCategory,
   startOfMonth,
 } from "@/lib/finance";
+import {
+  computeCategoryDeltas,
+  computeFinanceInsights,
+  type CategoryDelta,
+  type FinanceInsight,
+} from "@/lib/finance-insights";
 import { MonthSwitcher } from "@/components/finance/MonthSwitcher";
+import { UncategorisedNudge } from "@/components/finance/UncategorisedNudge";
 import { useFinanceRange } from "@/hooks/useFinanceRange";
 
 type SubTab = "stats" | "budget" | "note";
@@ -75,10 +85,21 @@ export function FinanceStatsPage() {
   } = useFinanceRange();
 
   const [transactions, setTransactions] = useState<FinanceTransaction[]>([]);
+  const [prevTransactions, setPrevTransactions] = useState<FinanceTransaction[]>(
+    []
+  );
   const [categories, setCategories] = useState<FinanceCategory[]>([]);
+  const [accounts, setAccounts] = useState<FinanceAccount[]>([]);
   const [budgets, setBudgets] = useState<FinanceBudget[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // View-wide slicers (client-side, single-select). Both default to "all".
+  // `accountFilter` matches source OR destination account (transfers touch two);
+  // `categoryTopFilter` is a top-level category id or the literal
+  // "uncategorised", mirroring sliceByTopCategory's roll-up key rule.
+  const [accountFilter, setAccountFilter] = useState<string>("all");
+  const [categoryTopFilter, setCategoryTopFilter] = useState<string>("all");
 
   /** The effective from/to date strings used by every query. */
   const { fromDate, toDate } = useMemo(() => {
@@ -97,6 +118,28 @@ export function FinanceStatsPage() {
     };
   }, [filterMode, rangeFrom, rangeTo, year, month]);
 
+  /**
+   * The equal-length window immediately preceding the current one, used to
+   * compute month-over-month deltas and insights. Month mode → the previous
+   * calendar month; range mode → the same number of days ending the day before
+   * `fromDate`.
+   */
+  const { prevFrom, prevTo } = useMemo(() => {
+    if (filterMode === "range") {
+      const from = parseYmd(fromDate);
+      const to = parseYmd(toDate);
+      const lengthDays =
+        Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1;
+      const pTo = addDays(from, -1);
+      const pFrom = addDays(pTo, -(lengthDays - 1));
+      return { prevFrom: ymd(pFrom), prevTo: ymd(pTo) };
+    }
+    return {
+      prevFrom: ymd(startOfMonth(year, month - 1)),
+      prevTo: ymd(endOfMonth(year, month - 1)),
+    };
+  }, [filterMode, fromDate, toDate, year, month]);
+
   // Budget dialog
   const [budgetDialogOpen, setBudgetDialogOpen] = useState(false);
   const [editingBudget, setEditingBudget] = useState<FinanceBudget | null>(null);
@@ -114,7 +157,7 @@ export function FinanceStatsPage() {
       // viewing a single month. In range mode we skip the query.
       const budgetMonthFirst =
         filterMode === "month" ? ymd(startOfMonth(year, month)) : null;
-      const [{ data: t, error: tErr }, { data: c }, budgetRes] =
+      const [{ data: t, error: tErr }, { data: c }, { data: a }, budgetRes, prevRes] =
         await Promise.all([
           supabase
             .from("finance_transactions")
@@ -127,43 +170,160 @@ export function FinanceStatsPage() {
             .from("finance_categories")
             .select("*")
             .order("position"),
+          // Active accounts — only used to label the account filter dropdown, so
+          // archived ones are excluded. Independent of the date range.
+          supabase
+            .from("finance_accounts")
+            .select("*")
+            .is("archived_at", null)
+            .order("position"),
           budgetMonthFirst
             ? supabase
                 .from("finance_budgets")
                 .select("*")
                 .eq("month", budgetMonthFirst)
             : Promise.resolve({ data: [] as FinanceBudget[] }),
+          // Previous period — powers MoM deltas + insights. Best-effort: an
+          // error here must not block the page, so we swallow it and fall back
+          // to an empty list (deltas/insights simply show less).
+          supabase
+            .from("finance_transactions")
+            .select("*")
+            .gte("occurred_on", prevFrom)
+            .lte("occurred_on", prevTo),
         ]);
       if (cancelled) return;
       if (tErr) setError(tErr.message);
       setTransactions((t as FinanceTransaction[]) ?? []);
       setCategories((c as FinanceCategory[]) ?? []);
+      setAccounts((a as FinanceAccount[]) ?? []);
       setBudgets((budgetRes.data as FinanceBudget[]) ?? []);
+      setPrevTransactions((prevRes.data as FinanceTransaction[]) ?? []);
       setLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [user, fromDate, toDate, filterMode, year, month]);
+  }, [user, fromDate, toDate, filterMode, year, month, prevFrom, prevTo]);
+
+  // ---- View-wide slicers -------------------------------------------------
+  // Lookup + top-category key resolver, replicating sliceByTopCategory's rule
+  // (subcategory rolls up to its parent; missing/none → "uncategorised").
+  const catMap = useMemo(
+    () => new Map(categories.map((c) => [c.id, c])),
+    [categories]
+  );
+
+  // Active, kind-scoped top-level categories offered in the category filter.
+  const topCategoryOptions = useMemo(
+    () =>
+      categories.filter(
+        (c) => !c.parent_id && !c.archived_at && c.kind === side
+      ),
+    [categories, side]
+  );
+
+  // The option set depends on `side`, so when the side flips (or categories
+  // reload) drop a now-invalid selection back to "all". "uncategorised" is
+  // always valid; "all" is the default.
+  useEffect(() => {
+    if (categoryTopFilter === "all" || categoryTopFilter === "uncategorised") {
+      return;
+    }
+    if (!topCategoryOptions.some((c) => c.id === categoryTopFilter)) {
+      setCategoryTopFilter("all");
+    }
+  }, [categoryTopFilter, topCategoryOptions]);
+
+  const filtersActive = accountFilter !== "all" || categoryTopFilter !== "all";
+  function clearFilters() {
+    setAccountFilter("all");
+    setCategoryTopFilter("all");
+  }
+
+  const matches = useMemo(() => {
+    const topCategoryKeyOf = (t: FinanceTransaction) => {
+      const cat = t.category_id ? catMap.get(t.category_id) : undefined;
+      const top = cat?.parent_id ? catMap.get(cat.parent_id) ?? cat : cat;
+      return top?.id ?? "uncategorised";
+    };
+    return (t: FinanceTransaction) =>
+      (accountFilter === "all" ||
+        t.account_id === accountFilter ||
+        t.to_account_id === accountFilter) &&
+      (categoryTopFilter === "all" ||
+        topCategoryKeyOf(t) === categoryTopFilter);
+  }, [accountFilter, categoryTopFilter, catMap]);
+
+  // Filtered current + previous windows — used everywhere the raw arrays used
+  // to be, so the whole Stats view (totals, pie, notes, deltas, insights,
+  // budget spend) honours the slicers.
+  const filtered = useMemo(
+    () => transactions.filter(matches),
+    [transactions, matches]
+  );
+  const filteredPrev = useMemo(
+    () => prevTransactions.filter(matches),
+    [prevTransactions, matches]
+  );
 
   const totals = useMemo(() => {
     let income = 0;
     let expense = 0;
-    for (const r of transactions) {
+    for (const r of filtered) {
       if (r.kind === "income") income += r.amount_paise;
       else if (r.kind === "expense") expense += r.amount_paise;
     }
     return { income, expense };
-  }, [transactions]);
+  }, [filtered]);
+
+  // Apply the reviewed categories in local state so the pie, category list and
+  // budgets recompute immediately (and the banner's count drops) without a
+  // refetch. Only rows in the patch are touched; existing categories are never
+  // overwritten because `uncategorised` only ever contains null-category rows.
+  function handleCategorised(updates: { id: string; category_id: string }[]) {
+    if (updates.length === 0) return;
+    const patch = new Map(updates.map((u) => [u.id, u.category_id]));
+    setTransactions((cur) =>
+      cur.map((t) =>
+        patch.has(t.id) ? { ...t, category_id: patch.get(t.id)! } : t
+      )
+    );
+  }
 
   const slices = useMemo(
-    () => sliceByTopCategory(transactions, side, categories),
-    [transactions, side, categories]
+    () => sliceByTopCategory(filtered, side, categories),
+    [filtered, side, categories]
   );
   const noteBuckets = useMemo(
-    () => sliceByNote(transactions, side),
-    [transactions, side]
+    () => sliceByNote(filtered, side),
+    [filtered, side]
   );
+
+  // Month-over-month category deltas (keyed like sliceByTopCategory) and the
+  // derived auto-insights, both computed against the previous period.
+  const deltas = useMemo(
+    () => computeCategoryDeltas(filtered, filteredPrev, categories, side),
+    [filtered, filteredPrev, categories, side]
+  );
+  const insights = useMemo(() => {
+    const now = new Date();
+    const dim = daysInMonth(year, month);
+    return computeFinanceInsights({
+      current: filtered,
+      previous: filteredPrev,
+      categories,
+      side,
+      month: {
+        isCurrent:
+          filterMode === "month" &&
+          year === now.getFullYear() &&
+          month === now.getMonth(),
+        daysElapsed: Math.min(now.getDate(), dim),
+        daysInMonth: dim,
+      },
+    });
+  }, [filtered, filteredPrev, categories, side, filterMode, year, month]);
 
   function openAddBudget() {
     setEditingBudget(null);
@@ -284,6 +444,58 @@ export function FinanceStatsPage() {
         )}
       </div>
 
+      {/* View-wide slicers — filter the WHOLE Stats view by account and/or
+          top-level category. Client-side only; both default to "all". */}
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-[9rem] flex-1 space-y-1 sm:max-w-[16rem]">
+          <Label htmlFor="acct-filter" className="text-xs text-muted-foreground">
+            Account
+          </Label>
+          <Select
+            id="acct-filter"
+            value={accountFilter}
+            onChange={(e) => setAccountFilter(e.target.value)}
+            className="h-9 text-sm"
+          >
+            <option value="all">All accounts</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="min-w-[9rem] flex-1 space-y-1 sm:max-w-[16rem]">
+          <Label htmlFor="cat-filter" className="text-xs text-muted-foreground">
+            Category
+          </Label>
+          <Select
+            id="cat-filter"
+            value={categoryTopFilter}
+            onChange={(e) => setCategoryTopFilter(e.target.value)}
+            className="h-9 text-sm"
+          >
+            <option value="all">All categories</option>
+            {topCategoryOptions.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+            <option value="uncategorised">Uncategorised</option>
+          </Select>
+        </div>
+        {filtersActive && (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={clearFilters}
+            className="h-9 text-xs text-muted-foreground"
+          >
+            Clear filters
+          </Button>
+        )}
+      </div>
+
       {/* Sub-tabs */}
       <div className="inline-flex rounded-md border bg-card p-0.5 text-sm">
         {(["stats", "budget", "note"] as SubTab[]).map((t) => (
@@ -340,15 +552,29 @@ export function FinanceStatsPage() {
         </p>
       )}
 
+      {/* Gentle nudge: shown only when the loaded period has uncategorised
+          income/expense rows. Self-hides once none remain. */}
+      {!loading && (
+        <UncategorisedNudge
+          transactions={filtered}
+          categories={categories}
+          onApplied={handleCategorised}
+        />
+      )}
+
       {loading ? (
         <SkeletonList rows={4} />
       ) : tab === "stats" ? (
-        <StatsTab
-          slices={slices}
-          side={side}
-          transactions={transactions}
-          categories={categories}
-        />
+        <div className="space-y-4">
+          {insights.length > 0 && <InsightsCard insights={insights} />}
+          <StatsTab
+            slices={slices}
+            side={side}
+            transactions={filtered}
+            categories={categories}
+            deltas={deltas}
+          />
+        </div>
       ) : tab === "budget" ? (
         filterMode === "range" ? (
           <EmptyState
@@ -360,7 +586,7 @@ export function FinanceStatsPage() {
           <BudgetTab
             budgets={budgets}
             categories={categories}
-            transactions={transactions}
+            transactions={filtered}
             side={side}
             onAdd={openAddBudget}
             onEdit={openEditBudget}
@@ -523,6 +749,65 @@ function RangeFilter({
 }
 
 // ---------------------------------------------------------------------------
+// Auto-insights card — plain-English findings above the pie
+// ---------------------------------------------------------------------------
+
+/** Fixed tone → colour: up (increase) is a warning, down is favourable. */
+const INSIGHT_DOT: Record<FinanceInsight["tone"], string> = {
+  up: "bg-rose-500",
+  down: "bg-emerald-500",
+  alert: "bg-amber-500",
+  neutral: "bg-muted-foreground/40",
+};
+
+function InsightsCard({ insights }: { insights: FinanceInsight[] }) {
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Sparkles className="h-4 w-4 text-amber-500" />
+          Insights
+        </div>
+        <ul className="space-y-2">
+          {insights.map((i) => (
+            <li key={i.id} className="flex items-start gap-2.5 text-sm">
+              <span
+                className={cn(
+                  "mt-1.5 h-2 w-2 shrink-0 rounded-full",
+                  INSIGHT_DOT[i.tone]
+                )}
+                aria-hidden
+              />
+              <span className="text-foreground">{i.text}</span>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Small ▲/▼ MoM badge; colour is semantic per side (spending less is good). */
+function DeltaBadge({ pct, side }: { pct: number; side: Side }) {
+  const up = pct > 0;
+  const favourable = side === "expense" ? !up : up;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-0.5 text-[11px] font-medium tabular-nums",
+        favourable
+          ? "text-emerald-600 dark:text-emerald-400"
+          : "text-rose-600 dark:text-rose-400"
+      )}
+      title="vs previous period"
+    >
+      {up ? "▲" : "▼"}
+      {Math.abs(Math.round(pct))}%
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Stats sub-tab — pie chart + legend
 // ---------------------------------------------------------------------------
 
@@ -531,11 +816,13 @@ function StatsTab({
   side,
   transactions,
   categories,
+  deltas,
 }: {
   slices: ReturnType<typeof sliceByTopCategory>;
   side: Side;
   transactions: FinanceTransaction[];
   categories: FinanceCategory[];
+  deltas: Map<string, CategoryDelta>;
 }) {
   // Which category rows are expanded to show their note-level breakdown.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -579,6 +866,40 @@ function StatsTab({
     const out = new Map<
       string,
       Array<{ note: string; count: number; total_paise: number }>
+    >();
+    for (const [k, inner] of acc) {
+      out.set(k, [...inner.values()].sort((a, b) => b.total_paise - a.total_paise));
+    }
+    return out;
+  }, [transactions, side, catMap]);
+
+  // Subcategory breakdown per top-level category key: group by the actual
+  // (leaf) category the transaction is filed under.
+  const subcatsByKey = useMemo(() => {
+    const acc = new Map<
+      string,
+      Map<string, { label: string; count: number; total_paise: number }>
+    >();
+    for (const t of transactions) {
+      if (t.kind !== side) continue;
+      const cat = t.category_id ? catMap.get(t.category_id) : undefined;
+      const top = cat?.parent_id ? catMap.get(cat.parent_id) ?? cat : cat;
+      const key = top?.id ?? "uncategorised";
+      const leafKey = cat?.id ?? "none";
+      const leafLabel = cat?.name ?? "Uncategorised";
+      let inner = acc.get(key);
+      if (!inner) {
+        inner = new Map();
+        acc.set(key, inner);
+      }
+      const cur = inner.get(leafKey) ?? { label: leafLabel, count: 0, total_paise: 0 };
+      cur.count += 1;
+      cur.total_paise += t.amount_paise;
+      inner.set(leafKey, cur);
+    }
+    const out = new Map<
+      string,
+      Array<{ label: string; count: number; total_paise: number }>
     >();
     for (const [k, inner] of acc) {
       out.set(k, [...inner.values()].sort((a, b) => b.total_paise - a.total_paise));
@@ -635,8 +956,17 @@ function StatsTab({
           <ul className="divide-y">
             {slices.map((s) => {
               const notes = notesByKey.get(s.key) ?? [];
+              const subcats = subcatsByKey.get(s.key) ?? [];
               const isOpen = expanded.has(s.key);
               const canExpand = notes.length > 0;
+              const delta = deltas.get(s.key);
+              // "new" when there's current spend but no prior; a ▲/▼ badge when
+              // the change is meaningful (non-zero after rounding).
+              const isNew = !!delta && delta.deltaPct === null;
+              const showBadge =
+                !!delta &&
+                delta.deltaPct !== null &&
+                Math.round(delta.deltaPct) !== 0;
               return (
                 <li key={s.key}>
                   <button
@@ -655,6 +985,13 @@ function StatsTab({
                       {s.pct.toFixed(0)}%
                     </span>
                     <span className="flex-1 truncate">{s.label}</span>
+                    {isNew ? (
+                      <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        new
+                      </span>
+                    ) : showBadge && delta ? (
+                      <DeltaBadge pct={delta.deltaPct as number} side={side} />
+                    ) : null}
                     <span className="font-semibold">{formatINR(s.total_paise)}</span>
                     {canExpand && (
                       <ChevronDown
@@ -666,29 +1003,62 @@ function StatsTab({
                     )}
                   </button>
                   {isOpen && (
-                    <ul className="bg-muted/30 border-t text-xs">
-                      {notes.map((n) => (
-                        <li
-                          key={n.note || "(no note)"}
-                          className="flex items-center gap-3 pl-10 pr-5 py-2"
-                        >
-                          <span className="flex-1 truncate text-muted-foreground">
-                            {n.note || <span className="italic">(no note)</span>}
-                            <span className="ml-2 text-muted-foreground/70">
-                              ×{n.count}
+                    <div className="bg-muted/30 border-t text-xs">
+                      {/* By subcategory — only when there's more than one leaf. */}
+                      {subcats.length > 1 && (
+                        <>
+                          <div className="px-5 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                            By subcategory
+                          </div>
+                          <ul>
+                            {subcats.map((sc) => (
+                              <li
+                                key={sc.label}
+                                className="flex items-center gap-3 pl-10 pr-5 py-2"
+                              >
+                                <span className="flex-1 truncate text-muted-foreground">
+                                  {sc.label}
+                                  <span className="ml-2 text-muted-foreground/70">×{sc.count}</span>
+                                </span>
+                                <span className="tabular-nums text-muted-foreground/70">
+                                  {s.total_paise > 0
+                                    ? `${((sc.total_paise / s.total_paise) * 100).toFixed(0)}%`
+                                    : ""}
+                                </span>
+                                <span className="font-medium tabular-nums w-24 text-right">
+                                  {formatINR(sc.total_paise)}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                      {/* By note */}
+                      <div className="px-5 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                        By note
+                      </div>
+                      <ul>
+                        {notes.map((n) => (
+                          <li
+                            key={n.note || "(no note)"}
+                            className="flex items-center gap-3 pl-10 pr-5 py-2"
+                          >
+                            <span className="flex-1 truncate text-muted-foreground">
+                              {n.note || <span className="italic">(no note)</span>}
+                              <span className="ml-2 text-muted-foreground/70">×{n.count}</span>
                             </span>
-                          </span>
-                          <span className="tabular-nums text-muted-foreground/70">
-                            {s.total_paise > 0
-                              ? `${((n.total_paise / s.total_paise) * 100).toFixed(0)}%`
-                              : ""}
-                          </span>
-                          <span className="font-medium tabular-nums w-24 text-right">
-                            {formatINR(n.total_paise)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
+                            <span className="tabular-nums text-muted-foreground/70">
+                              {s.total_paise > 0
+                                ? `${((n.total_paise / s.total_paise) * 100).toFixed(0)}%`
+                                : ""}
+                            </span>
+                            <span className="font-medium tabular-nums w-24 text-right">
+                              {formatINR(n.total_paise)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
                 </li>
               );
