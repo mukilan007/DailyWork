@@ -711,13 +711,29 @@ function chartRanked(
  *  states of work, not grades, so the reserved status palette stays out. */
 function chartBreakdown(r: ReportData): string {
   const colors = statusColors(r);
-  const parts = r.totals.byStatus
+  const used = r.totals.byStatus
     .map((st) => ({
       label: st.positiveLabel,
       value: st.count,
       color: colors.get(st.key) ?? SERIES[0],
     }))
     .filter((p) => p.value > 0);
+
+  // Never invent a hue past the palette: a ninth series folds into "Other"
+  // rather than reusing slot 8 and making two states look identical.
+  const parts =
+    used.length <= SERIES.length
+      ? used
+      : [
+          ...used.slice(0, SERIES.length - 1),
+          {
+            label: `Other (${used.length - (SERIES.length - 1)})`,
+            value: used
+              .slice(SERIES.length - 1)
+              .reduce((sum, p) => sum + p.value, 0),
+            color: SERIES[SERIES.length - 1],
+          },
+        ];
   if (parts.length === 0) return "";
 
   const total = parts.reduce((s, p) => s + p.value, 0);

@@ -454,7 +454,17 @@ export type UserIntegration = {
 // Work log — daily record of what was worked on, exported as a mentor report.
 // ---------------------------------------------------------------------------
 
-export type WorkLogStatus = "done" | "in_progress" | "blocked";
+export type WorkLogStatus =
+  | "open"
+  | "in_progress"
+  | "fixed_in_developer"
+  | "fixed"
+  | "not_an_issue"
+  | "later"
+  | "not_reproduced"
+  | "completed"
+  | "closed"
+  | "on_hold";
 
 /** What kind of record this is. Drives how the report presents it: tasks read
  *  as prose, issues and bugs as tables. */

@@ -9,15 +9,20 @@ import type { TodoCategory, TodoStatus, TodoCustomField, TodoSpace } from "@/typ
  *  20260803000006_todo_space_config.sql. Used for the Inbox (no row) and as a
  *  fallback for real spaces whose `statuses` column is somehow empty. */
 export const DEFAULT_STATUSES: TodoStatus[] = [
-  { key: "todo", label: "Todo", color: "#94a3b8" },
+  { key: "open", label: "Open", color: "#94a3b8" },
   { key: "in_progress", label: "In progress", color: "#3b82f6" },
-  { key: "done", label: "Done", color: "#22c55e", done: true },
-  { key: "blocked", label: "Blocked", color: "#ef4444" },
-  { key: "cancelled", label: "Cancelled", color: "#64748b", done: true },
+  { key: "fixed_in_developer", label: "Fixed in developer", color: "#0ea5e9" },
+  { key: "fixed", label: "Fixed", color: "#10b981", done: true },
+  { key: "not_an_issue", label: "Not an issue", color: "#6b7280", done: true },
+  { key: "later", label: "Later", color: "#8b5cf6" },
+  { key: "not_reproduced", label: "Not reproduced", color: "#64748b", done: true },
+  { key: "completed", label: "Completed", color: "#22c55e", done: true },
+  { key: "closed", label: "Closed", color: "#475569", done: true },
+  { key: "on_hold", label: "On hold", color: "#f59e0b" },
 ];
 
 /** The default status key applied to new todos (matches the DB default). */
-export const DEFAULT_STATUS_KEY = "todo";
+export const DEFAULT_STATUS_KEY = "open";
 
 /** Resolved config for a page: real space reads its columns, Inbox uses
  *  sensible defaults (no categories, default statuses, no custom fields). */
