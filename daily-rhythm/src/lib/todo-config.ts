@@ -64,13 +64,23 @@ export function slugify(label: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-/** Whether a status counts as "done" for is_done sync. A status is done if its
- *  config flags `done:true`, or its key is one of the terminal defaults. */
+/** Terminal keys from the original seed, which shipped without a `done` flag
+ *  (see 20260803000006), so they have to be treated as done by key alone. */
+const IMPLICIT_DONE_KEYS = new Set(["done", "cancelled"]);
+
+/** Whether a status counts as "done" for is_done sync.
+ *
+ *  An explicit flag always wins — including an explicit `false`. The space
+ *  editor writes `done` on every status it saves, so once a status has been
+ *  edited its checkbox is authoritative; previously a status that inherited
+ *  the key "done" or "cancelled" was forced terminal even with the box
+ *  unticked, and the UI gave no way to say otherwise. The key fallback now
+ *  applies only when the flag is absent, which is exactly the seeded case. */
 export function statusIsDone(statusKey: string | undefined, statuses: TodoStatus[]): boolean {
   if (!statusKey) return false;
   const found = statuses.find((s) => s.key === statusKey);
-  if (found?.done) return true;
-  return statusKey === "done" || statusKey === "cancelled";
+  if (found && typeof found.done === "boolean") return found.done;
+  return IMPLICIT_DONE_KEYS.has(statusKey);
 }
 
 /** Look up a status by key within a config set (falls back to undefined). */
