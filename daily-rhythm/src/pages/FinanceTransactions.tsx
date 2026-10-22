@@ -60,6 +60,13 @@ import {
 import { MonthSwitcher } from "@/components/finance/MonthSwitcher";
 import { ImportStatementDialog } from "@/components/finance/ImportStatementDialog";
 import { UncategorisedNudge } from "@/components/finance/UncategorisedNudge";
+import {
+  ALL_CATEGORIES,
+  CategoryFilterFields,
+  isCategoryFilterActive,
+  makeCategoryMatcher,
+  type CategoryFilterValue,
+} from "@/components/finance/CategoryFilter";
 import { useFinanceRange } from "@/hooks/useFinanceRange";
 
 type Tab = "daily" | "calendar" | "monthly";
@@ -103,6 +110,8 @@ export function FinanceTransactionsPage() {
   const [busy, setBusy] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [dayDialogKey, setDayDialogKey] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] =
+    useState<CategoryFilterValue>(ALL_CATEGORIES);
 
   // Load accounts + categories once.
   useEffect(() => {
@@ -215,8 +224,26 @@ export function FinanceTransactionsPage() {
     };
   }, [user, fromDate, toDate, filterMode, year, tab]);
 
-  const monthTotals = useMemo(() => sumTotals(transactions), [transactions]);
-  const dayGroups = useMemo(() => groupTxByDay(transactions), [transactions]);
+  // Category/subcategory slicer. Applied client-side on top of the loaded
+  // window so everything downstream — totals, day groups, the calendar, the
+  // list views and the CSV export — shows the same filtered set. The raw
+  // `transactions` array stays untouched so inserts/edits still reconcile
+  // against the full window.
+  const categoryMatches = useMemo(
+    () => makeCategoryMatcher(categories, categoryFilter),
+    [categories, categoryFilter]
+  );
+  const visibleTx = useMemo(
+    () => transactions.filter(categoryMatches),
+    [transactions, categoryMatches]
+  );
+  const visibleYearTx = useMemo(
+    () => yearTx.filter(categoryMatches),
+    [yearTx, categoryMatches]
+  );
+
+  const monthTotals = useMemo(() => sumTotals(visibleTx), [visibleTx]);
+  const dayGroups = useMemo(() => groupTxByDay(visibleTx), [visibleTx]);
 
   async function handleSave(draft: TxDraft) {
     if (!user) return;
@@ -361,8 +388,8 @@ export function FinanceTransactionsPage() {
   }
 
   const exportRows = useMemo(
-    () => txToCsvRows(transactions, accounts, categories),
-    [transactions, accounts, categories]
+    () => txToCsvRows(visibleTx, accounts, categories),
+    [visibleTx, accounts, categories]
   );
 
   const accountById = useMemo(
@@ -579,6 +606,28 @@ export function FinanceTransactionsPage() {
         )}
       </div>
 
+      {/* Category slicers — narrow every view (and the export) to one
+          category, optionally down to a single subcategory. */}
+      <div className="flex flex-wrap items-end gap-3">
+        <CategoryFilterFields
+          categories={categories}
+          value={categoryFilter}
+          onChange={setCategoryFilter}
+          idPrefix="tx-cat"
+          className="min-w-[9rem] flex-1 space-y-1 sm:max-w-[16rem]"
+        />
+        {isCategoryFilterActive(categoryFilter) && (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setCategoryFilter(ALL_CATEGORIES)}
+            className="h-9 text-xs text-muted-foreground"
+          >
+            Clear filters
+          </Button>
+        )}
+      </div>
+
       {/* Sub-tabs — all three views work in both Month and Range mode. */}
       <div className="flex border-b text-sm">
         {(Object.keys(TAB_LABEL) as Tab[]).map((t) => (
@@ -600,22 +649,26 @@ export function FinanceTransactionsPage() {
 
       {/* Summary band */}
       <Card>
-        <CardContent className="p-4 grid grid-cols-3 gap-4 text-center">
-          <div>
+        {/* Three columns only from `sm` up. A full INR amount needs ~135px,
+            but a third of a phone-width card is ~87px, so at `grid-cols-3`
+            the figures overlapped each other and spilled past the card. On
+            mobile they become label-left / value-right rows instead. */}
+        <CardContent className="p-4 grid grid-cols-1 sm:grid-cols-3 gap-1.5 sm:gap-4 text-left sm:text-center">
+          <div className="flex items-baseline justify-between gap-3 sm:block">
             <div className="text-xs text-muted-foreground">Income</div>
-            <div className="text-sky-500 font-semibold">
+            <div className="text-sky-500 font-semibold tabular-nums">
               {formatINR(monthTotals.income_paise)}
             </div>
           </div>
-          <div>
+          <div className="flex items-baseline justify-between gap-3 sm:block">
             <div className="text-xs text-muted-foreground">Exp.</div>
-            <div className="text-rose-500 font-semibold">
+            <div className="text-rose-500 font-semibold tabular-nums">
               {formatINR(monthTotals.expense_paise)}
             </div>
           </div>
-          <div>
+          <div className="flex items-baseline justify-between gap-3 sm:block">
             <div className="text-xs text-muted-foreground">Total</div>
-            <div className="font-semibold">
+            <div className="font-semibold tabular-nums">
               {formatINR(monthTotals.income_paise - monthTotals.expense_paise)}
             </div>
           </div>
@@ -632,7 +685,7 @@ export function FinanceTransactionsPage() {
           income/expense rows. Self-hides once none remain. */}
       {!loading && (
         <UncategorisedNudge
-          transactions={transactions}
+          transactions={visibleTx}
           categories={categories}
           onApplied={handleApplied}
         />
@@ -728,7 +781,7 @@ export function FinanceTransactionsPage() {
             <CalendarView
               year={calYear}
               month={calMonth}
-              transactions={transactions}
+              transactions={visibleTx}
               onDayClick={(key) => setDayDialogKey(key)}
               minDay={fromDate}
               maxDay={toDate}
@@ -738,7 +791,7 @@ export function FinanceTransactionsPage() {
           <CalendarView
             year={year}
             month={month}
-            transactions={transactions}
+            transactions={visibleTx}
             onDayClick={(key) => setDayDialogKey(key)}
           />
         )
@@ -746,10 +799,10 @@ export function FinanceTransactionsPage() {
         <RangeMonthlyView
           from={fromDate}
           to={toDate}
-          transactions={transactions}
+          transactions={visibleTx}
         />
       ) : (
-        <MonthlyView year={year} transactions={yearTx} />
+        <MonthlyView year={year} transactions={visibleYearTx} />
       )}
 
       {/* Floating Add button (mobile pattern) */}
@@ -799,7 +852,7 @@ export function FinanceTransactionsPage() {
       />
       <DayDetailDialog
         dayKey={dayDialogKey}
-        transactions={transactions}
+        transactions={visibleTx}
         accountById={accountById}
         categoryById={categoryById}
         categories={categories}
