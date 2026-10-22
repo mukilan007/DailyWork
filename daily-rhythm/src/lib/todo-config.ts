@@ -11,7 +11,9 @@ import type { TodoCategory, TodoStatus, TodoCustomField, TodoSpace } from "@/typ
 export const DEFAULT_STATUSES: TodoStatus[] = [
   { key: "open", label: "Open", color: "#94a3b8" },
   { key: "in_progress", label: "In progress", color: "#3b82f6" },
+  { key: "review", label: "Review", color: "#6366f1" },
   { key: "fixed_in_developer", label: "Fixed in developer", color: "#0ea5e9" },
+  { key: "validation", label: "Validation", color: "#14b8a6" },
   { key: "fixed", label: "Fixed", color: "#10b981", done: true },
   { key: "not_an_issue", label: "Not an issue", color: "#6b7280", done: true },
   { key: "later", label: "Later", color: "#8b5cf6" },

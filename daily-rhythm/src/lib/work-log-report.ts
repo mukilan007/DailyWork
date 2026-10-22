@@ -20,7 +20,9 @@ export {
 export const STATUS_LABEL: Record<WorkLogStatus, string> = {
   open: "Open",
   in_progress: "In progress",
+  review: "Review",
   fixed_in_developer: "Fixed in developer",
+  validation: "Validation",
   fixed: "Fixed",
   not_an_issue: "Not an issue",
   later: "Later",

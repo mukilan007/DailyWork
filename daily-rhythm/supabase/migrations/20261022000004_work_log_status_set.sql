@@ -1,6 +1,6 @@
 -- Wider work-log status set (2026-10-22).
 --
--- Replaces done/in_progress/blocked with a ten-state workflow. Existing rows
+-- Replaces done/in_progress/blocked with a twelve-state workflow. Existing rows
 -- are remapped BEFORE the constraint is swapped, so nothing is ever left
 -- violating a check and no row is deleted:
 --
@@ -29,7 +29,9 @@ alter table public.work_log
   check (status in (
     'open',
     'in_progress',
+    'review',
     'fixed_in_developer',
+    'validation',
     'fixed',
     'not_an_issue',
     'later',

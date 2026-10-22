@@ -457,7 +457,9 @@ export type UserIntegration = {
 export type WorkLogStatus =
   | "open"
   | "in_progress"
+  | "review"
   | "fixed_in_developer"
+  | "validation"
   | "fixed"
   | "not_an_issue"
   | "later"

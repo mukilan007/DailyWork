@@ -29,7 +29,9 @@ import type { EntryType, WorkLogEntry, WorkLogStatus } from "@/types";
 const STATUSES: WorkLogStatus[] = [
   "open",
   "in_progress",
+  "review",
   "fixed_in_developer",
+  "validation",
   "fixed",
   "not_an_issue",
   "later",
@@ -53,7 +55,9 @@ const ENTRY_TYPES: Array<{ value: EntryType; label: string }> = [
 const STATUS_STYLE: Record<WorkLogStatus, string> = {
   open: "bg-slate-500/10 text-slate-400 ring-slate-500/20",
   in_progress: "bg-blue-500/10 text-blue-400 ring-blue-500/20",
+  review: "bg-indigo-500/10 text-indigo-400 ring-indigo-500/20",
   fixed_in_developer: "bg-sky-500/10 text-sky-400 ring-sky-500/20",
+  validation: "bg-teal-500/10 text-teal-400 ring-teal-500/20",
   fixed: "bg-emerald-500/10 text-emerald-400 ring-emerald-500/20",
   not_an_issue: "bg-zinc-500/10 text-zinc-400 ring-zinc-500/20",
   later: "bg-violet-500/10 text-violet-400 ring-violet-500/20",

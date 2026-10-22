@@ -1,4 +1,4 @@
--- Same ten-state status set for todo spaces (2026-10-22).
+-- Same twelve-state status set for todo spaces (2026-10-22).
 --
 -- Brings todo spaces onto the vocabulary the work log now uses. Per-space
 -- statuses are user-editable, so this ONLY rewrites spaces still carrying the
@@ -20,7 +20,9 @@ alter table public.todo_spaces
   alter column statuses set default
     '[{"key":"open","label":"Open","color":"#94a3b8"},
       {"key":"in_progress","label":"In progress","color":"#3b82f6"},
+      {"key":"review","label":"Review","color":"#6366f1"},
       {"key":"fixed_in_developer","label":"Fixed in developer","color":"#0ea5e9"},
+      {"key":"validation","label":"Validation","color":"#14b8a6"},
       {"key":"fixed","label":"Fixed","color":"#10b981","done":true},
       {"key":"not_an_issue","label":"Not an issue","color":"#6b7280","done":true},
       {"key":"later","label":"Later","color":"#8b5cf6"},
@@ -34,7 +36,9 @@ update public.todo_spaces
 set statuses =
     '[{"key":"open","label":"Open","color":"#94a3b8"},
       {"key":"in_progress","label":"In progress","color":"#3b82f6"},
+      {"key":"review","label":"Review","color":"#6366f1"},
       {"key":"fixed_in_developer","label":"Fixed in developer","color":"#0ea5e9"},
+      {"key":"validation","label":"Validation","color":"#14b8a6"},
       {"key":"fixed","label":"Fixed","color":"#10b981","done":true},
       {"key":"not_an_issue","label":"Not an issue","color":"#6b7280","done":true},
       {"key":"later","label":"Later","color":"#8b5cf6"},
@@ -54,8 +58,9 @@ with rewritten as (
   where (
     select array_agg(elem->>'key' order by ord)
     from jsonb_array_elements(statuses) with ordinality as t(elem, ord)
-  ) = array['open', 'in_progress', 'fixed_in_developer', 'fixed', 'not_an_issue',
-            'later', 'not_reproduced', 'completed', 'closed', 'on_hold']
+  ) = array['open', 'in_progress', 'review', 'fixed_in_developer', 'validation',
+            'fixed', 'not_an_issue', 'later', 'not_reproduced', 'completed',
+            'closed', 'on_hold']
 )
 update public.todos
 set status = case status
