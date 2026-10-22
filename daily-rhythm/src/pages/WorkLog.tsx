@@ -155,12 +155,8 @@ export function WorkLogPage() {
 
   const report = useMemo(
     () =>
-      buildWorkLogReport(entries, {
-        from: window_.from,
-        to: window_.to,
-        author: user?.email ?? undefined,
-      }),
-    [entries, window_.from, window_.to, user]
+      buildWorkLogReport(entries, { from: window_.from, to: window_.to }),
+    [entries, window_.from, window_.to]
   );
 
   async function handleSave(draft: Omit<WorkLogEntry, "id" | "user_id" | "created_at" | "updated_at" | "position">) {

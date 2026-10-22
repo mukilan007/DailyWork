@@ -436,9 +436,8 @@ export function TodosPage() {
     return buildTodoReport(visible, config, pageTitle, {
       from: rangeFrom || days[0] || ymd(),
       to: rangeTo || days[days.length - 1] || ymd(),
-      author: user?.email ?? undefined,
     });
-  }, [visible, config, pageTitle, rangeFrom, rangeTo, user]);
+  }, [visible, config, pageTitle, rangeFrom, rangeTo]);
 
   return (
     <div className="space-y-6">

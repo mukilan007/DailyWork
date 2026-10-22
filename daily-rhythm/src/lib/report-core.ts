@@ -130,8 +130,6 @@ export const REPORT_FORMAT_LABEL: Record<ReportFormat, string> = {
 };
 
 export interface ReportMeta {
-  /** Who the report is for / from — printed in the header when present. */
-  author?: string;
   from: string; // YYYY-MM-DD
   to: string; // YYYY-MM-DD
 }
@@ -461,7 +459,6 @@ export function renderHtml(r: ReportData, fields: ReportFields = ALL_FIELDS): st
   .wrap { max-width: 820px; margin: 0 auto; }
   h1 { font-size: 24px; margin: 0 0 4px; }
   .period { color: #52525b; margin: 0 0 24px; }
-  .author { color: #52525b; margin: 0 0 24px; }
   .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px; }
   .card { border: 1px solid #e4e4e7; border-radius: 8px; padding: 12px; }
   .card .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #71717a; }
@@ -500,7 +497,6 @@ export function renderHtml(r: ReportData, fields: ReportFields = ALL_FIELDS): st
 <body><div class="wrap">
   <h1>Work report</h1>
   <p class="period">${esc(period)}</p>
-  ${meta.author ? `<p class="author">${esc(meta.author)}</p>` : ""}
 
   <div class="cards">
     <div class="card"><div class="k">Tasks</div><div class="v">${totals.entries}</div></div>
@@ -951,7 +947,7 @@ export function renderVisualHtml(r: ReportData, fields: ReportFields = ALL_FIELD
 <body><div class="wrap">
   <div class="head">
     <h1>Work report</h1>
-    <p class="sub">${esc(period)}${meta.author ? ` · ${esc(meta.author)}` : ""}</p>
+    <p class="sub">${esc(period)}</p>
   </div>
 
   <div class="tiles">
@@ -1066,7 +1062,6 @@ export function renderMarkdown(r: ReportData, fields: ReportFields = ALL_FIELDS)
   out.push(`# Work report`);
   out.push("");
   out.push(`**Period:** ${formatDay(meta.from)} — ${formatDay(meta.to)}`);
-  if (meta.author) out.push(`**By:** ${meta.author}`);
   out.push("");
   out.push(
     `**${totals.entries}** tasks across **${totals.daysWorked}** day(s) · **${formatMinutes(
@@ -1231,7 +1226,6 @@ export async function renderPdf(
   text("Work report", 20, "bold");
   y += 2;
   text(`${formatDay(meta.from)} — ${formatDay(meta.to)}`, 11, "normal", [82, 82, 91]);
-  if (meta.author) text(meta.author, 11, "normal", [82, 82, 91]);
   y += 10;
 
   text(
