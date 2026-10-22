@@ -1096,7 +1096,6 @@ function BlockDialog({
               type="time"
               value={startTime}
               onChange={(e) => setStartTime(e.target.value)}
-              className="[color-scheme:dark]"
               required
             />
           </div>

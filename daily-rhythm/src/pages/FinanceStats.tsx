@@ -27,6 +27,13 @@ import { Input } from "@/components/ui/Input";
 import { DateField } from "@/components/ui/DateField";
 import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
+import {
+  ALL_CATEGORIES,
+  CategoryFilterFields,
+  isCategoryFilterActive,
+  makeCategoryMatcher,
+  type CategoryFilterValue,
+} from "@/components/finance/CategoryFilter";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
@@ -99,7 +106,8 @@ export function FinanceStatsPage() {
   // `categoryTopFilter` is a top-level category id or the literal
   // "uncategorised", mirroring sliceByTopCategory's roll-up key rule.
   const [accountFilter, setAccountFilter] = useState<string>("all");
-  const [categoryTopFilter, setCategoryTopFilter] = useState<string>("all");
+  const [categoryFilter, setCategoryFilter] =
+    useState<CategoryFilterValue>(ALL_CATEGORIES);
 
   /** The effective from/to date strings used by every query. */
   const { fromDate, toDate } = useMemo(() => {
@@ -207,53 +215,26 @@ export function FinanceStatsPage() {
   }, [user, fromDate, toDate, filterMode, year, month, prevFrom, prevTo]);
 
   // ---- View-wide slicers -------------------------------------------------
-  // Lookup + top-category key resolver, replicating sliceByTopCategory's rule
-  // (subcategory rolls up to its parent; missing/none → "uncategorised").
-  const catMap = useMemo(
-    () => new Map(categories.map((c) => [c.id, c])),
-    [categories]
-  );
-
-  // Active, kind-scoped top-level categories offered in the category filter.
-  const topCategoryOptions = useMemo(
-    () =>
-      categories.filter(
-        (c) => !c.parent_id && !c.archived_at && c.kind === side
-      ),
-    [categories, side]
-  );
-
-  // The option set depends on `side`, so when the side flips (or categories
-  // reload) drop a now-invalid selection back to "all". "uncategorised" is
-  // always valid; "all" is the default.
-  useEffect(() => {
-    if (categoryTopFilter === "all" || categoryTopFilter === "uncategorised") {
-      return;
-    }
-    if (!topCategoryOptions.some((c) => c.id === categoryTopFilter)) {
-      setCategoryTopFilter("all");
-    }
-  }, [categoryTopFilter, topCategoryOptions]);
-
-  const filtersActive = accountFilter !== "all" || categoryTopFilter !== "all";
+  const filtersActive =
+    accountFilter !== "all" || isCategoryFilterActive(categoryFilter);
   function clearFilters() {
     setAccountFilter("all");
-    setCategoryTopFilter("all");
+    setCategoryFilter(ALL_CATEGORIES);
   }
 
-  const matches = useMemo(() => {
-    const topCategoryKeyOf = (t: FinanceTransaction) => {
-      const cat = t.category_id ? catMap.get(t.category_id) : undefined;
-      const top = cat?.parent_id ? catMap.get(cat.parent_id) ?? cat : cat;
-      return top?.id ?? "uncategorised";
-    };
-    return (t: FinanceTransaction) =>
+  const categoryMatches = useMemo(
+    () => makeCategoryMatcher(categories, categoryFilter),
+    [categories, categoryFilter]
+  );
+
+  const matches = useMemo(
+    () => (t: FinanceTransaction) =>
       (accountFilter === "all" ||
         t.account_id === accountFilter ||
         t.to_account_id === accountFilter) &&
-      (categoryTopFilter === "all" ||
-        topCategoryKeyOf(t) === categoryTopFilter);
-  }, [accountFilter, categoryTopFilter, catMap]);
+      categoryMatches(t),
+    [accountFilter, categoryMatches]
+  );
 
   // Filtered current + previous windows — used everywhere the raw arrays used
   // to be, so the whole Stats view (totals, pie, notes, deltas, insights,
@@ -445,7 +426,7 @@ export function FinanceStatsPage() {
       </div>
 
       {/* View-wide slicers — filter the WHOLE Stats view by account and/or
-          top-level category. Client-side only; both default to "all". */}
+          category + subcategory. Client-side only; all default to "all". */}
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-[9rem] flex-1 space-y-1 sm:max-w-[16rem]">
           <Label htmlFor="acct-filter" className="text-xs text-muted-foreground">
@@ -465,25 +446,14 @@ export function FinanceStatsPage() {
             ))}
           </Select>
         </div>
-        <div className="min-w-[9rem] flex-1 space-y-1 sm:max-w-[16rem]">
-          <Label htmlFor="cat-filter" className="text-xs text-muted-foreground">
-            Category
-          </Label>
-          <Select
-            id="cat-filter"
-            value={categoryTopFilter}
-            onChange={(e) => setCategoryTopFilter(e.target.value)}
-            className="h-9 text-sm"
-          >
-            <option value="all">All categories</option>
-            {topCategoryOptions.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-            <option value="uncategorised">Uncategorised</option>
-          </Select>
-        </div>
+        <CategoryFilterFields
+          categories={categories}
+          value={categoryFilter}
+          onChange={setCategoryFilter}
+          kind={side}
+          idPrefix="stats-cat"
+          className="min-w-[9rem] flex-1 space-y-1 sm:max-w-[16rem]"
+        />
         {filtersActive && (
           <Button
             type="button"

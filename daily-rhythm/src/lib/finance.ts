@@ -32,6 +32,18 @@ export function rupeesToPaise(input: string): number | null {
   return Math.round(n * 100);
 }
 
+const INR_INPUT_FMT = new Intl.NumberFormat("en-IN", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+/** "81,560.00" — Indian-grouped rupees with no ₹ symbol, for editable amount
+ *  fields whose label already carries the currency. Pairs with
+ *  `rupeesToPaise`, which strips the separators back out. */
+export function formatRupeesInput(paise: number): string {
+  return INR_INPUT_FMT.format(paise / 100);
+}
+
 const INR_FMT = new Intl.NumberFormat("en-IN", {
   style: "currency",
   currency: "INR",

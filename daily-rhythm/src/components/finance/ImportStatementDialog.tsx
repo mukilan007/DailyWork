@@ -18,6 +18,7 @@ import {
   ACCOUNT_TYPE_LABEL,
   ACCOUNT_TYPE_ORDER,
   formatINR,
+  formatRupeesInput,
   paiseToRupees,
   rupeesToPaise,
 } from "@/lib/finance";
@@ -828,16 +829,10 @@ export function ImportStatementDialog({
                       )}
                     </td>
                     <td className="px-2 py-1.5 align-top text-right">
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        step="0.01"
-                        value={paiseToRupees(r.amount_paise)}
-                        onChange={(e) => {
-                          const v = rupeesToPaise(e.target.value);
-                          if (v !== null) updateRow(i, { amount_paise: v });
-                        }}
-                        className="h-8 w-24 rounded-md border border-input bg-background px-2 text-right text-xs"
+                      <AmountInput
+                        paise={r.amount_paise}
+                        onChange={(v) => updateRow(i, { amount_paise: v })}
+                        label={`Amount for row ${i + 1}`}
                       />
                     </td>
                   </tr>
@@ -872,6 +867,47 @@ export function ImportStatementDialog({
         </div>
       )}
     </Dialog>
+  );
+}
+
+/** Editable rupee amount that reads as money when you aren't typing in it.
+ *
+ *  This can't be an `<input type="number">`: the HTML spec restricts that to a
+ *  bare floating-point value, so browsers reject "81,560.00" outright and the
+ *  field could only ever show an ungrouped "81560". A text input with
+ *  `inputMode="decimal"` still raises the numeric keypad on mobile, and lets
+ *  the grouped form render whenever the field isn't focused.
+ *
+ *  While focused we show the plain, ungrouped number so editing (and caret
+ *  placement) behaves normally; the grouped form returns on blur. Keystrokes
+ *  that don't parse are kept in the draft but not committed, so a half-typed
+ *  "1." never clobbers the row's amount. */
+function AmountInput({
+  paise,
+  onChange,
+  label,
+}: {
+  paise: number;
+  onChange: (paise: number) => void;
+  label: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      aria-label={label}
+      value={draft ?? formatRupeesInput(paise)}
+      onFocus={() => setDraft(String(paiseToRupees(paise)))}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        const v = rupeesToPaise(e.target.value);
+        if (v !== null) onChange(v);
+      }}
+      onBlur={() => setDraft(null)}
+      className="h-8 w-28 rounded-md border border-input bg-background px-2 text-right text-xs tabular-nums"
+    />
   );
 }
 

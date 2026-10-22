@@ -6,6 +6,7 @@ import { AuthPage } from "@/pages/Auth";
 import { HomePage } from "@/pages/Home";
 import { DailyRoutinePage } from "@/pages/DailyRoutine";
 import { TodosPage } from "@/pages/Todos";
+import { WorkLogPage } from "@/pages/WorkLog";
 import { TodoSpacesPage } from "@/pages/TodoSpaces";
 import { TodoSpaceSettingsPage } from "@/pages/TodoSpaceSettings";
 import { GymPage } from "@/pages/Gym";
@@ -61,6 +62,7 @@ export default function App() {
               <Route path="/" element={<MotivationPage />} />
               <Route path="/dashboard" element={<HomePage />} />
               <Route path="/daily-routine" element={<DailyRoutinePage />} />
+              <Route path="/work-log" element={<WorkLogPage />} />
               <Route path="/todos" element={<TodoSpacesPage />} />
               <Route path="/todos/:spaceId" element={<TodosPage />} />
               <Route path="/todos/:spaceId/settings" element={<TodoSpaceSettingsPage />} />

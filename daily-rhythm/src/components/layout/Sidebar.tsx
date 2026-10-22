@@ -1,6 +1,7 @@
 import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   Home,
+  ClipboardList,
   Dumbbell,
   Activity,
   HeartPulse,
@@ -59,6 +60,7 @@ const PRIMARY: NavItem[] = [
   { to: "/today", label: "Today", icon: CalendarClock },
   { to: "/daily-routine", label: "Daily Routine", icon: Activity },
   { to: "/todos", label: "Todos", icon: ListTodo },
+  { to: "/work-log", label: "Work Done", icon: ClipboardList },
   { to: "/focus", label: "Focus", icon: Timer },
   { to: "/gym", label: "Gym Workout", icon: Dumbbell },
   { to: "/weekly-review", label: "Weekly Review", icon: CalendarCheck2 },
