@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   Plus,
@@ -60,6 +60,7 @@ import {
   INBOX_CONFIG,
   spaceConfig,
   statusIsDone,
+  todoIsDone,
   findStatus,
   findCategory,
   DEFAULT_STATUS_KEY,
@@ -106,6 +107,12 @@ export function TodosPage() {
   const config: SpaceConfig = useMemo(
     () => (isInbox ? INBOX_CONFIG : spaceConfig(space)),
     [isInbox, space]
+  );
+
+  /** Done-ness for display, driven by the status the card shows. */
+  const isDone = useCallback(
+    (t: Todo) => todoIsDone(t, config.statuses),
+    [config.statuses]
   );
 
   useEffect(() => {
@@ -279,7 +286,7 @@ export function TodosPage() {
   }
 
   async function toggleDone(todo: Todo) {
-    const next = !todo.is_done;
+    const next = !isDone(todo);
     // Keep status in step with the checkbox: pick a "done" status when
     // checking and an open one when unchecking, falling back to the canonical
     // 'done'/'todo' keys so is_done and status never drift.
@@ -328,11 +335,11 @@ export function TodosPage() {
   }
 
   async function clearCompleted() {
-    const doneIds = todos.filter((t) => t.is_done).map((t) => t.id);
+    const doneIds = todos.filter(isDone).map((t) => t.id);
     if (doneIds.length === 0) return;
     if (!confirm(`Delete ${doneIds.length} completed ticket${doneIds.length === 1 ? "" : "s"}?`)) return;
     const prev = todos;
-    setTodos((ts) => ts.filter((t) => !t.is_done));
+    setTodos((ts) => ts.filter((t) => !isDone(t)));
     const { error } = await supabase.from("todos").delete().in("id", doneIds);
     if (error) {
       setTodos(prev);
@@ -343,9 +350,9 @@ export function TodosPage() {
   const counts = useMemo(
     () => ({
       all: todos.length,
-      active: todos.filter((t) => !t.is_done).length,
-      done: todos.filter((t) => t.is_done).length,
-      overdue: todos.filter((t) => !t.is_done && isOverdue(t.due_at)).length,
+      active: todos.filter((t) => !isDone(t)).length,
+      done: todos.filter(isDone).length,
+      overdue: todos.filter((t) => !isDone(t) && isOverdue(t.due_at)).length,
     }),
     [todos]
   );
@@ -354,7 +361,7 @@ export function TodosPage() {
     () =>
       todos.filter((t) => {
         const passDone =
-          filter === "active" ? !t.is_done : filter === "done" ? t.is_done : true;
+          filter === "active" ? !isDone(t) : filter === "done" ? isDone(t) : true;
         const passCategory =
           categoryFilter.length === 0 || categoryFilter.includes(t.category ?? "");
         const passStatus =
@@ -368,13 +375,13 @@ export function TodosPage() {
           (!rangeTo || effectiveDate <= rangeTo);
         return passDone && passCategory && passStatus && passRange;
       }),
-    [todos, filter, categoryFilter, statusFilter, rangeFrom, rangeTo]
+    [todos, filter, categoryFilter, statusFilter, rangeFrom, rangeTo, isDone]
   );
 
   /** Active tickets: sort by overdue first, then priority, then due date, then creation. */
   const sortedActive = useMemo(() => {
     return visible
-      .filter((t) => !t.is_done)
+      .filter((t) => !isDone(t))
       .slice()
       .sort((a, b) => {
         const aOver = isOverdue(a.due_at) ? 0 : 1;
@@ -392,7 +399,7 @@ export function TodosPage() {
   const sortedDone = useMemo(
     () =>
       visible
-        .filter((t) => t.is_done)
+        .filter((t) => isDone(t))
         .slice()
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
     [visible]
@@ -1033,9 +1040,12 @@ interface TicketCardProps {
 function TicketCard({ todo, config, onToggle, onEdit, onDelete }: TicketCardProps) {
   const category = findCategory(todo.category, config.categories);
   const status = findStatus(todo.status, config.statuses);
-  const overdue = !todo.is_done && isOverdue(todo.due_at);
-  const dueToday = !todo.is_done && isToday(todo.due_at);
-  const accentClass = todo.is_done
+  // Same rule as the list split, so the tick, the strike-through and the
+  // section a card sits in can never disagree with its own status badge.
+  const done = todoIsDone(todo, config.statuses);
+  const overdue = !done && isOverdue(todo.due_at);
+  const dueToday = !done && isToday(todo.due_at);
+  const accentClass = done
     ? "border-l-muted-foreground/30"
     : overdue
     ? "border-l-rose-500"
@@ -1055,11 +1065,11 @@ function TicketCard({ todo, config, onToggle, onEdit, onDelete }: TicketCardProp
             <button
               type="button"
               onClick={() => onToggle(todo)}
-              aria-pressed={todo.is_done}
-              aria-label={todo.is_done ? "Mark as not done" : "Mark as done"}
+              aria-pressed={done}
+              aria-label={done ? "Mark as not done" : "Mark as done"}
               className="mt-0.5 shrink-0 text-muted-foreground hover:text-primary transition-colors active:scale-90"
             >
-              {todo.is_done ? (
+              {done ? (
                 <CheckCircle2 className="h-5 w-5 text-primary" />
               ) : (
                 <Circle className="h-5 w-5" />
@@ -1071,13 +1081,13 @@ function TicketCard({ todo, config, onToggle, onEdit, onDelete }: TicketCardProp
                 <h3
                   className={cn(
                     "text-sm font-medium leading-snug",
-                    todo.is_done && "line-through text-muted-foreground"
+                    done && "line-through text-muted-foreground"
                   )}
                 >
                   {todo.title}
                 </h3>
                 <div className="flex items-center gap-1 shrink-0 -mt-1 -mr-1">
-                  {!todo.is_done && (
+                  {!done && (
                     <Button
                       type="button"
                       variant="ghost"
@@ -1106,7 +1116,7 @@ function TicketCard({ todo, config, onToggle, onEdit, onDelete }: TicketCardProp
                 <p
                   className={cn(
                     "mt-1 text-xs text-muted-foreground line-clamp-2 whitespace-pre-wrap",
-                    todo.is_done && "line-through"
+                    done && "line-through"
                   )}
                 >
                   {todo.description}

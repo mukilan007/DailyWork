@@ -66,7 +66,7 @@ export function slugify(label: string): string {
 
 /** Terminal keys from the original seed, which shipped without a `done` flag
  *  (see 20260803000006), so they have to be treated as done by key alone. */
-const IMPLICIT_DONE_KEYS = new Set(["done", "cancelled"]);
+const IMPLICIT_DONE_KEYS = new Set(["done", "cancelled", "completed", "closed"]);
 
 /** Whether a status counts as "done" for is_done sync.
  *
@@ -81,6 +81,25 @@ export function statusIsDone(statusKey: string | undefined, statuses: TodoStatus
   const found = statuses.find((s) => s.key === statusKey);
   if (found && typeof found.done === "boolean") return found.done;
   return IMPLICIT_DONE_KEYS.has(statusKey);
+}
+
+/** Is this ticket complete?
+ *
+ *  The *status* is authoritative, because it is what the card shows — reading
+ *  the stored `is_done` column instead let the two drift, so a ticket badged
+ *  "In Progress" could sit under DONE and a "Completed" one under ACTIVE.
+ *  `is_done` is consulted only when the status key isn't in the space config
+ *  (a status deleted or renamed since the ticket was written), where it is the
+ *  only signal left. It is still written on every save for the dashboard,
+ *  agenda and weekly review, which read it directly. */
+export function todoIsDone(
+  todo: { status?: string; is_done: boolean },
+  statuses: TodoStatus[]
+): boolean {
+  if (todo.status && statuses.some((s) => s.key === todo.status)) {
+    return statusIsDone(todo.status, statuses);
+  }
+  return todo.is_done;
 }
 
 /** Look up a status by key within a config set (falls back to undefined). */
