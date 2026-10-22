@@ -27,6 +27,7 @@ const NAV_ENTRIES: NavEntry[] = [
   { label: "Dashboard", to: "/dashboard" },
   { label: "Today", to: "/today" },
   { label: "Todos", to: "/todos" },
+  { label: "Work Done", to: "/work-log" },
   { label: "Daily Routine", to: "/daily-routine" },
   { label: "Gym", to: "/gym" },
   { label: "Coding Tracker", to: "/coding-tracker" },

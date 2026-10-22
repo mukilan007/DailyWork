@@ -166,6 +166,8 @@ export type Todo = {
   /** Status key into the space's `statuses` config (default "todo"). */
   status?: string;
   tags?: string[];
+  /** Defaults to "task" for rows created before the field existed. */
+  entry_type?: EntryType;
   /** Values for the space's custom fields, keyed by field key. */
   custom?: Record<string, unknown>;
 };
@@ -446,4 +448,36 @@ export type UserIntegration = {
   last_sync_at: string | null;
   credentials: Record<string, unknown>;
   notes: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// Work log — daily record of what was worked on, exported as a mentor report.
+// ---------------------------------------------------------------------------
+
+export type WorkLogStatus = "done" | "in_progress" | "blocked";
+
+/** What kind of record this is. Drives how the report presents it: tasks read
+ *  as prose, issues and bugs as tables. */
+export type EntryType = "task" | "customer_issue" | "bugtracker";
+
+export type WorkLogEntry = {
+  id: string;
+  user_id: string;
+  /** The day the work happened (YYYY-MM-DD), not when the row was typed. */
+  worked_on: string;
+  title: string;
+  details: string | null;
+  /** Free-text workstream tag (Backend, Review); previously-used values are
+   *  suggested. */
+  category: string | null;
+  /** Free-text product area this work touched (Finance, Todos); suggested the
+   *  same way. Null on rows created before the field existed. */
+  module: string | null;
+  status: WorkLogStatus;
+  entry_type: EntryType;
+  /** Effort in minutes; null = not tracked. */
+  minutes: number | null;
+  position: number;
+  created_at: string;
+  updated_at: string;
 };

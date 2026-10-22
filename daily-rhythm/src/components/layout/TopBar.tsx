@@ -9,6 +9,7 @@ const TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/daily-routine": "Daily Routine",
   "/todos": "Todos",
+  "/work-log": "Work Done",
   "/gym": "Gym Workout",
   "/coding-tracker": "Coding Tracker",
   "/health/period": "Period Tracker",

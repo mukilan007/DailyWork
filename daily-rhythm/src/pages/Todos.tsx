@@ -16,6 +16,7 @@ import {
   Repeat,
   Settings,
   ChevronDown,
+  Download,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -26,7 +27,9 @@ import { Textarea } from "@/components/ui/Textarea";
 import { Dialog } from "@/components/ui/Dialog";
 import { Badge } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { ReportDialog } from "@/components/report/ReportDialog";
 import { ExportButton } from "@/components/ui/ExportButton";
+import { buildTodoReport, downloadReport } from "@/lib/todo-report";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonList } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/useAuth";
@@ -44,6 +47,7 @@ import {
   DEFAULT_DUE_TIME,
 } from "@/lib/todo-recur";
 import type {
+  EntryType,
   Frequency,
   Todo,
   TodoPriority,
@@ -95,6 +99,7 @@ export function TodosPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Todo | null>(null);
   const [repeatsOpen, setRepeatsOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   // Resolved per-space schema. Inbox has no config row → sensible defaults
   // (no categories, default statuses, no custom fields).
@@ -177,6 +182,7 @@ export function TodosPage() {
         task_date: input.task_date,
         category: input.category,
         status: input.status,
+        entry_type: input.entry_type,
         is_done: nextIsDone,
         tags: input.tags,
         custom: input.custom,
@@ -249,6 +255,7 @@ export function TodosPage() {
           due_at: dueAt,
           estimated_min: input.estimated_min,
           task_date: input.task_date,
+          entry_type: input.entry_type,
           recurrence_id: recurrenceId,
           recurrence_due_on: recurrenceDueOn,
           space_id: effectiveSpaceId,
@@ -416,6 +423,23 @@ export function TodosPage() {
 
   const pageTitle = isInbox ? "Inbox" : space?.name ?? "Tickets";
 
+  // The report covers the tickets currently in view. Its period comes from the
+  // page's own date filter when set, otherwise from the span those tickets
+  // actually occupy — so it always matches what the page is showing.
+  const report = useMemo(() => {
+    const days = buildTodoReport(visible, config, pageTitle, {
+      from: "0000-01-01",
+      to: "9999-12-31",
+    })
+      .days.map((d) => d.day)
+      .sort();
+    return buildTodoReport(visible, config, pageTitle, {
+      from: rangeFrom || days[0] || ymd(),
+      to: rangeTo || days[days.length - 1] || ymd(),
+      author: user?.email ?? undefined,
+    });
+  }, [visible, config, pageTitle, rangeFrom, rangeTo, user]);
+
   return (
     <div className="space-y-6">
       <Link
@@ -438,6 +462,13 @@ export function TodosPage() {
         }
         actions={
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setReportOpen(true)}
+              disabled={loading || todos.length === 0}
+            >
+              <Download className="h-4 w-4" /> Report
+            </Button>
             <ExportButton
               disabled={loading || todos.length === 0}
               onExport={(format) =>
@@ -529,14 +560,17 @@ export function TodosPage() {
           ))}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="flex items-center gap-1">
+          {/* `flex-wrap`: the two date inputs plus the arrow and Clear run to
+              ~314px, which only just clears a 375px phone — once the category
+              and status filters sit alongside them it has to be able to wrap. */}
+          <div className="flex items-center gap-1 flex-wrap">
             <input
               type="date"
               aria-label="From date"
               value={rangeFrom}
               max={rangeTo || undefined}
               onChange={(e) => setRangeFrom(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs [color-scheme:dark] cursor-pointer"
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
             />
             <span className="text-xs text-muted-foreground">→</span>
             <input
@@ -545,7 +579,7 @@ export function TodosPage() {
               value={rangeTo}
               min={rangeFrom || undefined}
               onChange={(e) => setRangeTo(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs [color-scheme:dark] cursor-pointer"
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs cursor-pointer"
             />
             {(rangeFrom || rangeTo) && (
               <button
@@ -654,6 +688,16 @@ export function TodosPage() {
           setEditing(null);
         }}
         onSave={handleSave}
+      />
+
+      <ReportDialog
+        open={reportOpen}
+        onClose={() => setReportOpen(false)}
+        from={report.meta.from}
+        to={report.meta.to}
+        entryCount={report.totals.entries}
+        noun="ticket"
+        onDownload={(fmt, fields) => downloadReport(report, fmt, fields)}
       />
 
       <ManageRepeatsDialog
@@ -1038,7 +1082,7 @@ function TicketCard({ todo, config, onToggle, onEdit, onDelete }: TicketCardProp
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+                      className="h-8 w-8 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 transition-opacity"
                       aria-label={`Edit ${todo.title}`}
                       onClick={() => onEdit(todo)}
                     >
@@ -1049,7 +1093,7 @@ function TicketCard({ todo, config, onToggle, onEdit, onDelete }: TicketCardProp
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
+                    className="h-8 w-8 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 transition-opacity hover:text-destructive"
                     aria-label={`Delete ${todo.title}`}
                     onClick={() => onDelete(todo)}
                   >
@@ -1208,6 +1252,13 @@ function StatTile({
 
 // ---------- add / edit dialog ----------
 
+/** Entry kinds, mirroring the Work Done log. */
+const TODO_ENTRY_TYPES: Array<{ value: EntryType; label: string }> = [
+  { value: "task", label: "Task" },
+  { value: "customer_issue", label: "Customer Issue" },
+  { value: "bugtracker", label: "Bugtracker" },
+];
+
 type TicketDraft = {
   title: string;
   description: string | null;
@@ -1220,6 +1271,8 @@ type TicketDraft = {
   category: string | null;
   /** Status key into the space config. */
   status: string;
+  /** Tasks read as prose in the report; issues and bugs render as tables. */
+  entry_type: EntryType;
   tags: string[];
   custom: Record<string, unknown>;
   /** Only settable when creating (like finance's TransactionDialog). */
@@ -1244,6 +1297,7 @@ function TicketDialog({ open, editing, config, onClose, onSave }: TicketDialogPr
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<TodoPriority>("medium");
+  const [entryType, setEntryType] = useState<EntryType>("task");
   const [dueLocal, setDueLocal] = useState(""); // datetime-local string
   const [estimate, setEstimate] = useState("");
   const [taskDate, setTaskDate] = useState(""); // YYYY-MM-DD, the date the ticket is for
@@ -1271,6 +1325,7 @@ function TicketDialog({ open, editing, config, onClose, onSave }: TicketDialogPr
       setTitle(editing.title);
       setDescription(editing.description ?? "");
       setPriority(editing.priority);
+      setEntryType(editing.entry_type ?? "task");
       setDueLocal(isoToLocalInput(editing.due_at));
       setEstimate(editing.estimated_min == null ? "" : String(editing.estimated_min));
       setTaskDate(editing.task_date ?? "");
@@ -1294,6 +1349,7 @@ function TicketDialog({ open, editing, config, onClose, onSave }: TicketDialogPr
       setCustom(seededCustom);
     } else {
       setTitle("");
+      setEntryType("task");
       setDescription("");
       setPriority("medium");
       setDueLocal("");
@@ -1370,6 +1426,7 @@ function TicketDialog({ open, editing, config, onClose, onSave }: TicketDialogPr
         task_date: taskDate || null,
         category: category || null,
         status,
+        entry_type: entryType,
         tags,
         custom: customPayload,
         recurrence:
@@ -1396,9 +1453,37 @@ function TicketDialog({ open, editing, config, onClose, onSave }: TicketDialogPr
           ? "Update the ticket — changes save immediately."
           : "Capture work with a priority and optional due time."
       }
+      resizable
     >
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="space-y-1.5">
+          <Label>Type</Label>
+          <div
+            className="mb-3 flex flex-wrap gap-2"
+            role="radiogroup"
+            aria-label="Entry type"
+          >
+            {TODO_ENTRY_TYPES.map((t) => (
+              <label
+                key={t.value}
+                className={cn(
+                  "inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors",
+                  entryType === t.value
+                    ? "border-primary bg-primary/10 text-foreground"
+                    : "border-input text-muted-foreground hover:bg-accent hover:text-foreground"
+                )}
+              >
+                <input
+                  type="radio"
+                  name="ticket-entry-type"
+                  value={t.value}
+                  checked={entryType === t.value}
+                  onChange={() => setEntryType(t.value)}
+                />
+                {t.label}
+              </label>
+            ))}
+          </div>
           <Label htmlFor="ticket-title">Title</Label>
           <Input
             id="ticket-title"
@@ -1419,7 +1504,10 @@ function TicketDialog({ open, editing, config, onClose, onSave }: TicketDialogPr
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Notes, acceptance criteria, links…"
             maxLength={2000}
-            rows={3}
+            // A fixed ~8-line window rather than `rows={3}`: ticket bodies are
+            // usually numbered link lists, and 3 lines was too cramped to show
+            // that the field scrolls. Still drag-resizable, still capped.
+            className="h-44"
           />
         </div>
 
@@ -1561,7 +1649,7 @@ function TicketDialog({ open, editing, config, onClose, onSave }: TicketDialogPr
             // `color-scheme: dark` makes the native datetime-local calendar
             // icon and popup picker render with dark styling. Without it the
             // icon is dark-on-dark (invisible) on our dark theme.
-            className="[color-scheme:dark] cursor-pointer [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-80 hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
+            className="cursor-pointer [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-80 hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
           />
           {dueLocal && (
             <div className="flex items-center gap-1.5">
