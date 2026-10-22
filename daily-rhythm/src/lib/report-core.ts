@@ -459,7 +459,8 @@ export function renderHtml(r: ReportData, fields: ReportFields = ALL_FIELDS): st
   .wrap { max-width: 820px; margin: 0 auto; }
   h1 { font-size: 24px; margin: 0 0 4px; }
   .period { color: #52525b; margin: 0 0 24px; }
-  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+           gap: 12px; margin-bottom: 28px; }
   .card { border: 1px solid #e4e4e7; border-radius: 8px; padding: 12px; }
   .card .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #71717a; }
   .card .v { font-size: 20px; font-weight: 600; margin-top: 2px; }
@@ -500,17 +501,11 @@ export function renderHtml(r: ReportData, fields: ReportFields = ALL_FIELDS): st
 
   <div class="cards">
     <div class="card"><div class="k">Tasks</div><div class="v">${totals.entries}</div></div>
-    <div class="card"><div class="k">Days worked</div><div class="v">${totals.daysWorked}</div></div>
     ${
       fields.minutes
         ? `<div class="card"><div class="k">Time logged</div><div class="v">${esc(
             formatMinutes(totals.minutes)
           )}</div></div>`
-        : ""
-    }
-    ${
-      fields.status
-        ? `<div class="card"><div class="k">Completed</div><div class="v">${totals.doneCount}</div></div>`
         : ""
     }
   </div>
@@ -839,8 +834,6 @@ function chartBreakdown(r: ReportData): string {
 export function renderVisualHtml(r: ReportData, fields: ReportFields = ALL_FIELDS): string {
   const { meta, days, totals } = r;
   const period = `${formatDay(meta.from)} — ${formatDay(meta.to)}`;
-  const activeDays = totals.daysWorked;
-  const avg = activeDays > 0 ? Math.round(totals.minutes / activeDays) : 0;
   const namedModules = totals.byModule.filter((m) => m.module !== "Unassigned").length;
   const colors = statusColors(r);
 
@@ -904,7 +897,10 @@ export function renderVisualHtml(r: ReportData, fields: ReportFields = ALL_FIELD
   .head { border-bottom: 3px solid ${VIZ.s1}; padding-bottom: 14px; margin-bottom: 24px; }
   h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
   .sub { color:${VIZ.muted}; margin:0; }
-  .tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin: 22px 0 30px; }
+  /* auto-fit, so the row stays full whether 2, 3 or 4 tiles survive the
+     reader's field selection. */
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+           gap:12px; margin: 22px 0 30px; }
   .tile { border:1px solid ${VIZ.faint}; border-radius:10px; padding:14px; background:#fff; }
   .tile .k { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:${VIZ.muted}; }
   .tile .v { font-size:24px; font-weight:700; margin-top:4px; letter-spacing:-0.02em; }
@@ -942,7 +938,7 @@ export function renderVisualHtml(r: ReportData, fields: ReportFields = ALL_FIELD
   table.grid td.wrap { white-space:pre-wrap; min-width:16rem; }
   table.grid tr { page-break-inside:avoid; }
   @media print { body { padding:0; background:#fff; } .card,.tile { break-inside:avoid; } }
-  @media (max-width:640px) { .tiles { grid-template-columns:repeat(2,1fr); } body { padding:20px 14px; } }
+  @media (max-width:640px) { body { padding:20px 14px; } }
 </style></head>
 <body><div class="wrap">
   <div class="head">
@@ -951,21 +947,8 @@ export function renderVisualHtml(r: ReportData, fields: ReportFields = ALL_FIELD
   </div>
 
   <div class="tiles">
-    ${
-      fields.status
-        ? tile("Tasks completed", String(totals.doneCount))
-        : tile("Tasks", String(totals.entries))
-    }
+    ${tile("Tasks", String(totals.entries))}
     ${fields.minutes ? tile("Time invested", formatMinutes(totals.minutes)) : ""}
-    ${
-      fields.date
-        ? tile(
-            "Active days",
-            String(activeDays),
-            fields.minutes && avg > 0 ? `${formatMinutes(avg)} avg` : ""
-          )
-        : ""
-    }
     ${
       // Lead with modules once they're in use, otherwise keep the original
       // focus-area tile — never label a category count as a module count.
@@ -1064,9 +1047,7 @@ export function renderMarkdown(r: ReportData, fields: ReportFields = ALL_FIELDS)
   out.push(`**Period:** ${formatDay(meta.from)} — ${formatDay(meta.to)}`);
   out.push("");
   out.push(
-    `**${totals.entries}** tasks across **${totals.daysWorked}** day(s) · **${formatMinutes(
-      totals.minutes
-    )}** logged · ${totals.doneCount} completed${totals.byStatus
+    `**${totals.entries}** tasks · **${formatMinutes(totals.minutes)}** logged · ${totals.doneCount} completed${totals.byStatus
       .filter((st) => !st.done && st.count > 0)
       .map((st) => `, ${st.count} ${st.label.toLowerCase()}`)
       .join("")}`
@@ -1229,7 +1210,7 @@ export async function renderPdf(
   y += 10;
 
   text(
-    `${totals.entries} tasks · ${totals.daysWorked} day(s) · ${formatMinutes(
+    `${totals.entries} tasks · ${formatMinutes(
       totals.minutes
     )} logged · ${totals.doneCount} completed${totals.byStatus
       .filter((st) => !st.done && st.count > 0)
