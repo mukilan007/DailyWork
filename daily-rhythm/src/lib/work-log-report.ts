@@ -18,20 +18,26 @@ export {
 } from "@/lib/report-core";
 
 export const STATUS_LABEL: Record<WorkLogStatus, string> = {
-  done: "Done",
+  open: "Open",
   in_progress: "In progress",
-  blocked: "Blocked",
+  fixed_in_developer: "Fixed in developer",
+  fixed: "Fixed",
+  not_an_issue: "Not an issue",
+  later: "Later",
+  not_reproduced: "Not reproduced",
+  completed: "Completed",
+  closed: "Closed",
+  on_hold: "On hold",
 };
 
-/** Neutral wording for the visual report. Same three states, described by what
- *  they are rather than graded — "blocked" is usually someone else's
- *  dependency. Nothing is hidden: every entry still appears, with its real
- *  state, under a name that isn't a verdict. */
-const POSITIVE_LABEL: Record<WorkLogStatus, string> = {
-  done: "Completed",
-  in_progress: "In progress",
-  blocked: "Awaiting input",
-};
+/** States that count as finished in the headline figures. */
+const DONE_STATUSES: ReadonlySet<WorkLogStatus> = new Set<WorkLogStatus>([
+  "fixed",
+  "not_an_issue",
+  "not_reproduced",
+  "completed",
+  "closed",
+]);
 
 export function workLogItems(entries: WorkLogEntry[]): ReportItem[] {
   return entries.map((e) => ({
@@ -44,8 +50,7 @@ export function workLogItems(entries: WorkLogEntry[]): ReportItem[] {
     category: e.category,
     statusKey: e.status,
     statusLabel: STATUS_LABEL[e.status],
-    statusLabelPositive: POSITIVE_LABEL[e.status],
-    statusDone: e.status === "done",
+    statusDone: DONE_STATUSES.has(e.status),
     minutes: e.minutes,
     position: e.position,
     created_at: e.created_at,

@@ -26,7 +26,18 @@ import {
 } from "@/lib/work-log-report";
 import type { EntryType, WorkLogEntry, WorkLogStatus } from "@/types";
 
-const STATUSES: WorkLogStatus[] = ["done", "in_progress", "blocked"];
+const STATUSES: WorkLogStatus[] = [
+  "open",
+  "in_progress",
+  "fixed_in_developer",
+  "fixed",
+  "not_an_issue",
+  "later",
+  "not_reproduced",
+  "completed",
+  "closed",
+  "on_hold",
+];
 
 /** Entry kinds. Tasks read as prose in the report; issues and bugs are
  *  tabular, so they render as tables there. */
@@ -36,10 +47,20 @@ const ENTRY_TYPES: Array<{ value: EntryType; label: string }> = [
   { value: "bugtracker", label: "Bugtracker" },
 ];
 
+/** Badge tint per state. Terminal states lean green, work-in-flight blue,
+ *  parked states amber, and "not an issue" / "not reproduced" stay neutral —
+ *  they are outcomes, not problems. */
 const STATUS_STYLE: Record<WorkLogStatus, string> = {
-  done: "bg-emerald-500/10 text-emerald-500 ring-emerald-500/20",
-  in_progress: "bg-amber-500/10 text-amber-500 ring-amber-500/20",
-  blocked: "bg-rose-500/10 text-rose-500 ring-rose-500/20",
+  open: "bg-slate-500/10 text-slate-400 ring-slate-500/20",
+  in_progress: "bg-blue-500/10 text-blue-400 ring-blue-500/20",
+  fixed_in_developer: "bg-sky-500/10 text-sky-400 ring-sky-500/20",
+  fixed: "bg-emerald-500/10 text-emerald-400 ring-emerald-500/20",
+  not_an_issue: "bg-zinc-500/10 text-zinc-400 ring-zinc-500/20",
+  later: "bg-violet-500/10 text-violet-400 ring-violet-500/20",
+  not_reproduced: "bg-zinc-500/10 text-zinc-400 ring-zinc-500/20",
+  completed: "bg-emerald-500/10 text-emerald-400 ring-emerald-500/20",
+  closed: "bg-slate-500/10 text-slate-300 ring-slate-500/20",
+  on_hold: "bg-amber-500/10 text-amber-400 ring-amber-500/20",
 };
 
 /** How far back the list/report window starts, as presets. */
@@ -447,7 +468,7 @@ function EntryDialog({
   const [details, setDetails] = useState("");
   const [category, setCategory] = useState("");
   const [moduleName, setModuleName] = useState("");
-  const [status, setStatus] = useState<WorkLogStatus>("done");
+  const [status, setStatus] = useState<WorkLogStatus>("completed");
   const [entryType, setEntryType] = useState<EntryType>("task");
   const [hours, setHours] = useState("");
   const [mins, setMins] = useState("");
@@ -473,7 +494,7 @@ function EntryDialog({
       setDetails("");
       setCategory("");
       setModuleName("");
-      setStatus("done");
+      setStatus("completed");
       setEntryType("task");
       setHours("");
       setMins("");
