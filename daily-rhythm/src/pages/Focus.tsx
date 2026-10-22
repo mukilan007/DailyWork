@@ -861,7 +861,7 @@ export function FocusPage() {
                         type="button"
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
+                        className="h-8 w-8 shrink-0 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 transition-opacity hover:text-destructive"
                         aria-label="Delete session"
                         onClick={() => void deleteSession(s)}
                       >

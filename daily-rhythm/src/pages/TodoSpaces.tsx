@@ -282,7 +282,7 @@ export function TodoSpacesPage() {
                       aria-label={`Actions for ${space.name}`}
                       aria-haspopup="menu"
                       aria-expanded={menuOpen}
-                      className="rounded-md p-1.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus:opacity-100 group-hover:opacity-100 data-[open=true]:opacity-100"
+                      className="rounded-md p-1.5 text-muted-foreground opacity-100 md:opacity-0 transition-opacity hover:bg-accent hover:text-foreground md:focus:opacity-100 md:group-hover:opacity-100 data-[open=true]:opacity-100"
                     >
                       <MoreVertical className="h-4 w-4" />
                     </button>

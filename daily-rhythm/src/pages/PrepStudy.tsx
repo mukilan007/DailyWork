@@ -822,7 +822,7 @@ export function PrepStudyPage() {
                                     — {s.notes}
                                   </span>
                                 )}
-                                <div className="ml-auto shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                                <div className="ml-auto shrink-0 flex items-center gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100 transition-opacity">
                                   <button
                                     type="button"
                                     onClick={() => openEdit(s)}

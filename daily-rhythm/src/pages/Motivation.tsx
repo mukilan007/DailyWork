@@ -927,7 +927,7 @@ function SavedQuotesView({
               onClick={() => onRemove(q.id)}
               aria-label="Remove saved quote"
               title="Remove"
-              className="absolute right-2 top-2 h-7 w-7 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+              className="absolute right-2 top-2 h-7 w-7 text-muted-foreground opacity-100 md:opacity-0 transition-opacity hover:text-destructive md:group-hover:opacity-100 md:focus-visible:opacity-100"
             >
               <X className="h-3.5 w-3.5" />
             </Button>
