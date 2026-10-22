@@ -372,7 +372,7 @@ function NoteCard({
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+                className="h-8 w-8 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 transition-opacity"
                 aria-label={`Edit ${note.title}`}
                 onClick={onEdit}
               >
@@ -382,7 +382,7 @@ function NoteCard({
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
+                className="h-8 w-8 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 transition-opacity hover:text-destructive"
                 aria-label={`Delete ${note.title}`}
                 onClick={onDelete}
               >
@@ -515,7 +515,7 @@ function NoteDialog({
       }
       className="max-w-xl"
     >
-      <form onSubmit={onSubmit} className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+      <form onSubmit={onSubmit} className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-[180px,1fr] gap-3">
           <div className="space-y-1.5">
             <Label htmlFor="vn-kind">Kind</Label>

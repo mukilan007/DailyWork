@@ -6,7 +6,11 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
     <textarea
       ref={ref}
       className={cn(
-        "flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
+        // `resize-y` keeps the drag grip (vertical only — horizontal dragging
+        // broke the dialog's grid), bounded by `max-h` so a drag can never
+        // grow the field past the dialog; past that the field scrolls itself.
+        "flex min-h-[80px] max-h-[40vh] w-full resize-y overflow-auto",
+        "rounded-md border border-input bg-background px-3 py-2 text-sm",
         "placeholder:text-muted-foreground",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         "disabled:cursor-not-allowed disabled:opacity-50",
