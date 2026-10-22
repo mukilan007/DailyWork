@@ -20,6 +20,13 @@ import { toCSV } from "@/lib/export";
 import type { EntryType } from "@/types";
 
 /** One row in a report, whatever it was built from. */
+/** A field a particular source offers beyond the seven core ones — a todo's
+ *  priority or due date, or one of its space's custom fields. */
+export interface ReportFieldDef {
+  key: string;
+  label: string;
+}
+
 export interface ReportItem {
   id: string;
   /** Tasks render as prose; issues and bugs render as tables. */
@@ -44,6 +51,8 @@ export interface ReportItem {
   position: number;
   /** Secondary tie-break. */
   created_at: string;
+  /** Values for this source's extra fields, keyed by `ReportFieldDef.key`. */
+  extras?: Record<string, string | null>;
 }
 
 /** Section headings — plural, because they title a group. */
@@ -68,6 +77,8 @@ export const TABLE_TYPES: EntryType[] = ["customer_issue", "bugtracker"];
  *  excluded is omitted rather than rendered empty, and with the date off the
  *  report becomes one flat list instead of day-by-day. */
 export interface ReportFields {
+  /** Selection for the source's extra fields, keyed the same way. */
+  extras: Record<string, boolean>;
   title: boolean;
   date: boolean;
   details: boolean;
@@ -78,6 +89,7 @@ export interface ReportFields {
 }
 
 export const ALL_FIELDS: ReportFields = {
+  extras: {},
   title: true,
   date: true,
   details: true,
@@ -87,7 +99,17 @@ export const ALL_FIELDS: ReportFields = {
   minutes: true,
 };
 
-export const FIELD_LABEL: Record<keyof ReportFields, string> = {
+/** Core field labels. A source can rename one via `ReportData.labels` —
+ *  "Module" reads as "Space" on a todo board. */
+/** Every field a source offers, all ticked — the dialog's starting state. */
+export function allFieldsFor(r: ReportData): ReportFields {
+  return {
+    ...ALL_FIELDS,
+    extras: Object.fromEntries(r.extraDefs.map((d) => [d.key, true])),
+  };
+}
+
+export const FIELD_LABEL: Record<Exclude<keyof ReportFields, "extras">, string> = {
   title: "Task/ID",
   date: "Date",
   details: "Details",
@@ -122,6 +144,10 @@ export interface DayGroup {
 
 export interface ReportData {
   meta: ReportMeta;
+  /** Extra fields this source offers, in display order. */
+  extraDefs: ReportFieldDef[];
+  /** Per-source overrides for core field labels. */
+  labels: Partial<Record<Exclude<keyof ReportFields, "extras">, string>>;
   days: DayGroup[];
   totals: {
     entries: number;
@@ -160,7 +186,12 @@ export function formatDay(ymd: string): string {
 }
 
 /** Group entries into descending days with per-day totals and roll-ups. */
-export function buildReport(entries: ReportItem[], meta: ReportMeta): ReportData {
+export function buildReport(
+  entries: ReportItem[],
+  meta: ReportMeta,
+  extraDefs: ReportFieldDef[] = [],
+  labels: ReportData["labels"] = {}
+): ReportData {
   const inRange = entries
     .filter((e) => e.day >= meta.from && e.day <= meta.to)
     .sort(
@@ -219,6 +250,8 @@ export function buildReport(entries: ReportItem[], meta: ReportMeta): ReportData
 
   return {
     meta,
+    extraDefs,
+    labels,
     days,
     totals: {
       entries: inRange.length,
@@ -267,23 +300,46 @@ function itemsOfType(r: ReportData, type: EntryType): ReportItem[] {
   return r.days.flatMap((d) => d.entries.filter((e) => e.entryType === type));
 }
 
-/** Column set for a table, narrowed to the chosen fields. */
-function tableColumns(fields: ReportFields): Array<{ key: keyof ReportFields; label: string }> {
-  return (
-    [
-      { key: "date", label: "Date" },
-      { key: "title", label: FIELD_LABEL.title },
-      { key: "module", label: FIELD_LABEL.module },
-      { key: "category", label: FIELD_LABEL.category },
-      { key: "status", label: FIELD_LABEL.status },
-      { key: "minutes", label: FIELD_LABEL.minutes },
-      { key: "details", label: FIELD_LABEL.details },
-    ] as Array<{ key: keyof ReportFields; label: string }>
-  ).filter((c) => fields[c.key]);
+type CoreKey = Exclude<keyof ReportFields, "extras">;
+type Column = { key: CoreKey | string; label: string; extra?: boolean };
+
+/** Label for a core field, honouring the source's override. */
+function coreLabel(r: ReportData, k: CoreKey): string {
+  return r.labels[k] ?? FIELD_LABEL[k];
+}
+
+/** Column set for a table: core fields first, then the source's extras,
+ *  each narrowed to what the reader ticked. Details goes last so the wide
+ *  free-text column doesn't push the rest off the page. */
+function tableColumns(r: ReportData, fields: ReportFields): Column[] {
+  const core: CoreKey[] = ["date", "title", "module", "category", "status", "minutes"];
+  return [
+    ...core.filter((k) => fields[k]).map((k) => ({ key: k, label: coreLabel(r, k) })),
+    ...r.extraDefs
+      .filter((d) => fields.extras[d.key])
+      .map((d) => ({ key: d.key, label: d.label, extra: true })),
+    ...(fields.details ? [{ key: "details" as CoreKey, label: coreLabel(r, "details") }] : []),
+  ];
+}
+
+/** The metadata chips shown beside a prose entry, in column order. */
+function metaBits(r: ReportData, e: ReportItem, fields: ReportFields): string[] {
+  const bits: string[] = [];
+  if (fields.status) bits.push(e.statusLabel);
+  if (fields.module && e.module) bits.push(e.module);
+  if (fields.category && e.category) bits.push(e.category);
+  for (const d of r.extraDefs) {
+    const v = e.extras?.[d.key];
+    if (fields.extras[d.key] && v) bits.push(v);
+  }
+  if (fields.minutes && e.minutes) bits.push(formatMinutes(e.minutes));
+  return bits;
 }
 
 /** One cell's text for a tabular row. */
-function cellText(e: ReportItem, key: keyof ReportFields): string {
+function cellText(e: ReportItem, col: Column): string {
+  if (col.extra) return e.extras?.[col.key] ?? "";
+  const key = col.key as CoreKey;
   switch (key) {
     case "date":
       return formatDay(e.day);
@@ -299,6 +355,8 @@ function cellText(e: ReportItem, key: keyof ReportFields): string {
       return formatMinutes(e.minutes);
     case "details":
       return e.details ?? "";
+    default:
+      return "";
   }
 }
 
@@ -318,7 +376,7 @@ function tableSectionHtml(
   cls: string
 ): string {
   const rows = itemsOfType(r, type);
-  const cols = tableColumns(fields);
+  const cols = tableColumns(r, fields);
   if (rows.length === 0 || cols.length === 0) return "";
   const head = cols.map((c) => `<th>${esc(c.label)}</th>`).join("");
   const body = rows
@@ -327,7 +385,7 @@ function tableSectionHtml(
         `<tr>${cols
           .map(
             (c) =>
-              `<td class="${c.key === "details" ? "wrap" : ""}">${esc(cellText(e, c.key))}</td>`
+              `<td class="${c.key === "details" ? "wrap" : ""}">${esc(cellText(e, c))}</td>`
           )
           .join("")}</tr>`
     )
@@ -376,6 +434,10 @@ export function renderHtml(r: ReportData, fields: ReportFields = ALL_FIELDS): st
             }
             ${fields.module && e.module ? `<span class="badge mod">${esc(e.module)}</span>` : ""}
             ${fields.category && e.category ? `<span class="badge cat">${esc(e.category)}</span>` : ""}
+            ${r.extraDefs
+              .filter((d) => fields.extras[d.key] && e.extras?.[d.key])
+              .map((d) => `<span class="badge cat">${esc(e.extras![d.key]!)}</span>`)
+              .join("")}
             ${fields.minutes ? `<span class="mins">${esc(formatMinutes(e.minutes))}</span>` : ""}
           </div>
           ${fields.details && e.details ? `<p class="details">${esc(e.details)}</p>` : ""}
@@ -811,7 +873,10 @@ export function renderVisualHtml(r: ReportData, fields: ReportFields = ALL_FIELD
             fields.module && e.module ? `<span class="mod">${esc(e.module)}</span>` : ""
           }${
             fields.category && e.category ? `<span class="tag">${esc(e.category)}</span>` : ""
-          }${
+          }${r.extraDefs
+            .filter((d) => fields.extras[d.key] && e.extras?.[d.key])
+            .map((d) => `<span class="tag">${esc(e.extras![d.key]!)}</span>`)
+            .join("")}${
             fields.status
               ? `<span class="st" style="background:${colors.get(e.statusKey)}">${esc(
                   e.statusLabelPositive ?? e.statusLabel
@@ -1050,11 +1115,7 @@ export function renderMarkdown(r: ReportData, fields: ReportFields = ALL_FIELDS)
       out.push("");
     }
     for (const e of d.entries) {
-      const bits: string[] = [];
-      if (fields.status) bits.push(e.statusLabel);
-      if (fields.module && e.module) bits.push(e.module);
-      if (fields.category && e.category) bits.push(e.category);
-      if (fields.minutes && e.minutes) bits.push(formatMinutes(e.minutes));
+      const bits = metaBits(r, e, fields);
       const name = fields.title ? `**${e.title}**` : "";
       const meta = bits.length > 0 ? `_(${bits.join(" · ")})_` : "";
       out.push(`- ${[name, meta].filter(Boolean).join(" ")}`.trimEnd());
@@ -1067,7 +1128,7 @@ export function renderMarkdown(r: ReportData, fields: ReportFields = ALL_FIELDS)
   }
   for (const type of TABLE_TYPES) {
     const rows = itemsOfType(r, type);
-    const cols = tableColumns(fields);
+    const cols = tableColumns(r, fields);
     if (rows.length === 0 || cols.length === 0) continue;
     out.push("");
     out.push(`## ${ENTRY_TYPE_LABEL[type]}`);
@@ -1077,7 +1138,7 @@ export function renderMarkdown(r: ReportData, fields: ReportFields = ALL_FIELDS)
     for (const e of rows) {
       // Pipes and newlines would break the table, so they are neutralised.
       const cells = cols.map((c) =>
-        cellText(e, c.key).replace(/\|/g, "\\|").replace(/\n/g, "<br>")
+        cellText(e, c).replace(/\|/g, "\\|").replace(/\n/g, "<br>")
       );
       out.push(`| ${cells.join(" | ")} |`);
     }
@@ -1103,13 +1164,18 @@ export function renderCsvRows(
       ...(fields.minutes
         ? { minutes: e.minutes ?? "", time: formatMinutes(e.minutes) }
         : {}),
+      ...Object.fromEntries(
+        r.extraDefs
+          .filter((d) => fields.extras[d.key])
+          .map((d) => [d.key, e.extras?.[d.key] ?? ""])
+      ),
       ...(fields.details ? { details: e.details ?? "" } : {}),
     }))
   );
 }
 
 /** Column order, narrowed to the chosen fields so the header matches rows. */
-function csvColumns(fields: ReportFields): string[] {
+function csvColumns(r: ReportData, fields: ReportFields): string[] {
   return [
     "type",
     ...(fields.date ? ["date"] : []),
@@ -1118,6 +1184,7 @@ function csvColumns(fields: ReportFields): string[] {
     ...(fields.category ? ["category"] : []),
     ...(fields.status ? ["status"] : []),
     ...(fields.minutes ? ["minutes", "time"] : []),
+    ...r.extraDefs.filter((d) => fields.extras[d.key]).map((d) => d.key),
     ...(fields.details ? ["details"] : []),
   ];
 }
@@ -1221,11 +1288,7 @@ export async function renderPdf(
     }
 
     for (const e of d.entries) {
-      const bits: string[] = [];
-      if (fields.status) bits.push(e.statusLabel);
-      if (fields.module && e.module) bits.push(e.module);
-      if (fields.category && e.category) bits.push(e.category);
-      if (fields.minutes && e.minutes) bits.push(formatMinutes(e.minutes));
+      const bits = metaBits(r, e, fields);
       if (fields.title) text(e.title, 10.5, "bold", [24, 24, 27], 10);
       if (bits.length > 0) text(bits.join("  ·  "), 9, "normal", [113, 113, 122], 10);
       if (fields.details && e.details) text(e.details, 9.5, "normal", [63, 63, 70], 10);
@@ -1239,7 +1302,7 @@ export async function renderPdf(
   // wraps onto continuation lines beneath its row.
   for (const type of TABLE_TYPES) {
     const rows = itemsOfType(r, type);
-    const cols = tableColumns(fields).filter((c) => c.key !== "details");
+    const cols = tableColumns(r, fields).filter((c) => c.key !== "details");
     if (rows.length === 0) continue;
     const wantDetails = fields.details;
 
@@ -1273,7 +1336,7 @@ export async function renderPdf(
       doc.setFontSize(9);
       doc.setTextColor(24, 24, 27);
       cols.forEach((c, i) =>
-        doc.text(clip(cellText(e, c.key), colW), M + i * colW + 2, y)
+        doc.text(clip(cellText(e, c), colW), M + i * colW + 2, y)
       );
       y += 12;
       if (wantDetails && e.details) {
@@ -1319,7 +1382,7 @@ export async function downloadReport(
     case "csv":
       downloadFile(
         `${name}.csv`,
-        toCSV(renderCsvRows(r, fields), csvColumns(fields)),
+        toCSV(renderCsvRows(r, fields), csvColumns(r, fields)),
         "text/csv;charset=utf-8"
       );
       return;

@@ -1,8 +1,26 @@
 // Todos → report. A thin adapter over the shared engine in report-core.ts, so
 // a ticket board exports the same five formats as the Work Done log.
-import { buildReport, type ReportItem, type ReportMeta, type ReportData } from "@/lib/report-core";
+import {
+  buildReport,
+  type ReportFieldDef,
+  type ReportItem,
+  type ReportMeta,
+  type ReportData,
+} from "@/lib/report-core";
 import { DEFAULT_STATUS_KEY, type SpaceConfig } from "@/lib/todo-config";
 import type { Todo } from "@/types";
+
+/** Fields a ticket carries beyond the seven core ones. Priority, due date and
+ *  tags are always there; the custom fields come from the space's own config,
+ *  so the picker lists exactly what that board actually has. */
+export function todoExtraDefs(config: SpaceConfig): ReportFieldDef[] {
+  return [
+    { key: "priority", label: "Priority" },
+    { key: "due", label: "Due" },
+    { key: "tags", label: "Tags" },
+    ...config.customFields.map((f) => ({ key: `cf_${f.key}`, label: f.label })),
+  ];
+}
 
 export {
   downloadReport,
@@ -51,6 +69,17 @@ export function todoItems(todos: Todo[], config: SpaceConfig, spaceName: string)
       minutes: t.estimated_min ?? null,
       position: i,
       created_at: t.created_at,
+      extras: {
+        priority: t.priority,
+        due: t.due_at ? new Date(t.due_at).toLocaleString("en-GB") : null,
+        tags: t.tags?.length ? t.tags.join(", ") : null,
+        ...Object.fromEntries(
+          config.customFields.map((f) => {
+            const v = t.custom?.[f.key];
+            return [`cf_${f.key}`, v === undefined || v === null || v === "" ? null : String(v)];
+          })
+        ),
+      },
     };
   });
 }
@@ -61,5 +90,11 @@ export function buildTodoReport(
   spaceName: string,
   meta: ReportMeta
 ): ReportData {
-  return buildReport(todoItems(todos, config, spaceName), meta);
+  return buildReport(
+    todoItems(todos, config, spaceName),
+    meta,
+    todoExtraDefs(config),
+    // On a ticket board the "module" dimension is the space it belongs to.
+    { module: "Space" }
+  );
 }

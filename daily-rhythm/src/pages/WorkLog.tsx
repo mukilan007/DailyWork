@@ -417,6 +417,7 @@ export function WorkLogPage() {
         from={window_.from}
         to={window_.to}
         entryCount={report.totals.entries}
+        report={report}
         onDownload={(fmt, fields) => downloadReport(report, fmt, fields)}
       />
 

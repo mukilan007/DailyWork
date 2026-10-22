@@ -696,6 +696,7 @@ export function TodosPage() {
         from={report.meta.from}
         to={report.meta.to}
         entryCount={report.totals.entries}
+        report={report}
         noun="ticket"
         onDownload={(fmt, fields) => downloadReport(report, fmt, fields)}
       />

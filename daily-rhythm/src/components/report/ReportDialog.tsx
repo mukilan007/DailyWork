@@ -4,10 +4,11 @@ import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { cn } from "@/lib/utils";
 import {
-  ALL_FIELDS,
+  allFieldsFor,
   FIELD_LABEL,
   formatDay,
   REPORT_FORMAT_LABEL,
+  type ReportData,
   type ReportFields,
   type ReportFormat,
 } from "@/lib/report-core";
@@ -31,6 +32,7 @@ export function ReportDialog({
   from,
   to,
   entryCount,
+  report,
   noun = "task",
   onDownload,
 }: {
@@ -40,6 +42,9 @@ export function ReportDialog({
   from: string;
   to: string;
   entryCount: number;
+  /** Supplies the field list: core labels plus whatever extras this source
+   *  offers (a todo board's priority, due date, tags and custom fields). */
+  report: ReportData;
   /** What the rows are called in the summary line. */
   noun?: string;
   onDownload: (format: ReportFormat, fields: ReportFields) => Promise<void>;
@@ -49,7 +54,13 @@ export function ReportDialog({
   const [failed, setFailed] = useState<string | null>(null);
   // Two steps: pick the format, then pick what goes in it.
   const [step, setStep] = useState<"format" | "fields">("format");
-  const [fields, setFields] = useState<ReportFields>(ALL_FIELDS);
+  const [fields, setFields] = useState<ReportFields>(() => allFieldsFor(report));
+
+  // The field list is per-source, so re-seed when the source changes (a
+  // different space has different custom fields).
+  useEffect(() => {
+    setFields(allFieldsFor(report));
+  }, [report.extraDefs, report.labels]);
 
   // Reset to step one whenever the dialog reopens, so a half-finished pick
   // from last time never carries over.
@@ -59,10 +70,22 @@ export function ReportDialog({
     setFailed(null);
   }, [open]);
 
-  const fieldKeys = Object.keys(FIELD_LABEL) as Array<keyof ReportFields>;
-  const onCount = fieldKeys.filter((k) => fields[k]).length;
-  const allOn = onCount === fieldKeys.length;
+  type CoreKey = Exclude<keyof ReportFields, "extras">;
+  const coreKeys = Object.keys(FIELD_LABEL) as CoreKey[];
+  const allKeys = [
+    ...coreKeys.map((k) => ({ key: k, label: report.labels[k] ?? FIELD_LABEL[k], extra: false })),
+    ...report.extraDefs.map((d) => ({ key: d.key, label: d.label, extra: true })),
+  ];
+  const isOn = (f: { key: string; extra: boolean }) =>
+    f.extra ? !!fields.extras[f.key] : fields[f.key as CoreKey];
+  const onCount = allKeys.filter(isOn).length;
+  const allOn = onCount === allKeys.length;
   const anyField = onCount > 0;
+  const setAll = (on: boolean) =>
+    setFields({
+      ...(Object.fromEntries(coreKeys.map((k) => [k, on])) as Record<CoreKey, boolean>),
+      extras: Object.fromEntries(report.extraDefs.map((d) => [d.key, on])),
+    });
 
   return (
     <Dialog
@@ -113,36 +136,36 @@ export function ReportDialog({
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-muted-foreground">
-                {allOn ? "Everything is included." : `${onCount} of ${fieldKeys.length} fields`}
+                {allOn ? "Everything is included." : `${onCount} of ${allKeys.length} fields`}
               </p>
               <button
                 type="button"
-                onClick={() =>
-                  setFields(
-                    Object.fromEntries(
-                      fieldKeys.map((k) => [k, !allOn])
-                    ) as unknown as ReportFields
-                  )
-                }
+                onClick={() => setAll(!allOn)}
                 className="text-xs text-primary hover:underline"
               >
                 {allOn ? "Clear all" : "Select all"}
               </button>
             </div>
-            {fieldKeys.map((k) => (
+            {allKeys.map((f) => (
               <label
-                key={k}
+                key={`${f.extra ? "x" : "c"}-${f.key}`}
                 className={cn(
                   "flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors",
-                  fields[k] ? "border-primary bg-primary/5" : "border-input hover:bg-accent"
+                  isOn(f) ? "border-primary bg-primary/5" : "border-input hover:bg-accent"
                 )}
               >
                 <input
                   type="checkbox"
-                  checked={fields[k]}
-                  onChange={(e) => setFields((f) => ({ ...f, [k]: e.target.checked }))}
+                  checked={isOn(f)}
+                  onChange={(e) =>
+                    setFields((cur) =>
+                      f.extra
+                        ? { ...cur, extras: { ...cur.extras, [f.key]: e.target.checked } }
+                        : { ...cur, [f.key]: e.target.checked }
+                    )
+                  }
                 />
-                <span className="text-sm font-medium">{FIELD_LABEL[k]}</span>
+                <span className="text-sm font-medium">{f.label}</span>
               </label>
             ))}
             {!anyField && (
