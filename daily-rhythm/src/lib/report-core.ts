@@ -61,6 +61,7 @@ export const ENTRY_TYPE_LABEL: Record<EntryType, string> = {
   customer_issue: "Customer Issues",
   bugtracker: "Bugtracker",
   release: "Releases",
+  other: "Others",
 };
 
 /** Row-level label, for a single record (CSV's `type` column). */
@@ -69,11 +70,14 @@ export const ENTRY_TYPE_LABEL_ONE: Record<EntryType, string> = {
   customer_issue: "Customer Issue",
   bugtracker: "Bugtracker",
   release: "Release",
+  other: "Other",
 };
 
-/** The kinds that read better as a grid than as paragraphs. Everything else
- *  — tasks and releases — renders as prose in the day-by-day section. */
+/** The kinds that read better as a grid than as paragraphs. */
 export const TABLE_TYPES: EntryType[] = ["customer_issue", "bugtracker"];
+
+/** The kinds that read as paragraphs, in the order their sections appear. */
+export const PROSE_TYPES: EntryType[] = ["task", "release", "other"];
 
 export function isTableType(t: EntryType): boolean {
   return TABLE_TYPES.includes(t);
@@ -282,13 +286,15 @@ export function buildReport(
 // Renderers
 // ---------------------------------------------------------------------------
 
-/** Day groups of the prose entries, or one ungrouped list when the date is
- *  excluded. Issues and bugs are handled separately as tables. */
+/** Day groups for one prose type, or a single ungrouped list when the date is
+ *  excluded. Each prose type gets its own section, so tasks, releases and
+ *  others never share a heading. Issues and bugs render as tables instead. */
 function groupsFor(
   r: ReportData,
-  fields: ReportFields
+  fields: ReportFields,
+  type: EntryType
 ): Array<{ day: string | null; entries: ReportItem[]; minutes: number }> {
-  const keep = (list: ReportItem[]) => list.filter((e) => !isTableType(e.entryType));
+  const keep = (list: ReportItem[]) => list.filter((e) => e.entryType === type);
   if (fields.date) {
     return r.days
       .map((d) => ({ ...d, entries: keep(d.entries) }))
@@ -413,7 +419,8 @@ export function renderHtml(r: ReportData, fields: ReportFields = ALL_FIELDS): st
     )
     .join("");
 
-  const daySections = groupsFor(r, fields)
+  const daySectionsFor = (type: EntryType) =>
+    groupsFor(r, fields, type)
     .map(
       (d) => `
     <section class="day">
@@ -526,16 +533,20 @@ export function renderHtml(r: ReportData, fields: ReportFields = ALL_FIELDS): st
   }
 
   ${
-    daySections
-      ? `<h2>${fields.date ? "Daily breakdown" : "All items"}</h2>
-  ${daySections}`
-      : ""
+    // One section per type, and a type with nothing in it contributes no
+    // heading at all rather than an empty block.
+    PROSE_TYPES.map((t) => {
+      const body = daySectionsFor(t);
+      return body ? `<h2>${esc(ENTRY_TYPE_LABEL[t])}</h2>\n  ${body}` : "";
+    })
+      .filter(Boolean)
+      .join("\n  ")
   }
 
   ${TABLE_TYPES.map((t) => tableSectionHtml(r, t, fields, "tablewrap")).join("\n  ")}
 
   ${
-    daySections || TABLE_TYPES.some((t) => itemsOfType(r, t).length > 0)
+    r.days.some((d) => d.entries.length > 0)
       ? ""
       : '<p class="empty">No work logged in this period.</p>'
   }
@@ -856,7 +867,8 @@ export function renderVisualHtml(r: ReportData, fields: ReportFields = ALL_FIELD
       sub ? `<div class="s">${esc(sub)}</div>` : ""
     }</div>`;
 
-  const daySections = groupsFor(r, fields)
+  const daySectionsFor = (type: EntryType) =>
+    groupsFor(r, fields, type)
     .map(
       (d) => `<section class="day">
       ${d.day === null ? "" : `<h3><span>${esc(formatDay(d.day))}</span>${
@@ -1032,12 +1044,12 @@ export function renderVisualHtml(r: ReportData, fields: ReportFields = ALL_FIELD
       : ""
   }
 
-  ${
-    daySections
-      ? `<h2>${fields.date ? "Daily log" : "All items"}</h2>
-  ${daySections}`
-      : ""
-  }
+  ${PROSE_TYPES.map((t) => {
+    const body = daySectionsFor(t);
+    return body ? `<h2>${esc(ENTRY_TYPE_LABEL[t])}</h2>\n  ${body}` : "";
+  })
+    .filter(Boolean)
+    .join("\n  ")}
 
   ${TABLE_TYPES.map((t) => tableSectionHtml(r, t, fields, "card tablewrap")).join("\n  ")}`
   }
@@ -1083,31 +1095,37 @@ export function renderMarkdown(r: ReportData, fields: ReportFields = ALL_FIELDS)
     out.push("");
   }
 
-  out.push(fields.date ? "## Daily breakdown" : "## All items");
-  out.push("");
   if (days.length === 0) {
     out.push("_No work logged in this period._");
+    out.push("");
   }
-  for (const d of groupsFor(r, fields)) {
-    if (d.day !== null) {
-      out.push(
-        fields.minutes
-          ? `### ${formatDay(d.day)} — ${formatMinutes(d.minutes)}`
-          : `### ${formatDay(d.day)}`
-      );
+  // One heading per prose type; a type with no rows is skipped entirely.
+  for (const type of PROSE_TYPES) {
+    const groups = groupsFor(r, fields, type);
+    if (groups.length === 0) continue;
+    out.push(`## ${ENTRY_TYPE_LABEL[type]}`);
+    out.push("");
+    for (const d of groups) {
+      if (d.day !== null) {
+        out.push(
+          fields.minutes
+            ? `### ${formatDay(d.day)} — ${formatMinutes(d.minutes)}`
+            : `### ${formatDay(d.day)}`
+        );
+        out.push("");
+      }
+      for (const e of d.entries) {
+        const bits = metaBits(r, e, fields);
+        const name = fields.title ? `**${e.title}**` : "";
+        const meta = bits.length > 0 ? `_(${bits.join(" · ")})_` : "";
+        out.push(`- ${[name, meta].filter(Boolean).join(" ")}`.trimEnd());
+        if (fields.details && e.details) {
+          // Indent so multi-line details stay inside the list item.
+          for (const line of e.details.split("\n")) out.push(`  ${line}`);
+        }
+      }
       out.push("");
     }
-    for (const e of d.entries) {
-      const bits = metaBits(r, e, fields);
-      const name = fields.title ? `**${e.title}**` : "";
-      const meta = bits.length > 0 ? `_(${bits.join(" · ")})_` : "";
-      out.push(`- ${[name, meta].filter(Boolean).join(" ")}`.trimEnd());
-      if (fields.details && e.details) {
-        // Indent so multi-line details stay inside the list item.
-        for (const line of e.details.split("\n")) out.push(`  ${line}`);
-      }
-    }
-    out.push("");
   }
   for (const type of TABLE_TYPES) {
     const rows = itemsOfType(r, type);
@@ -1245,14 +1263,18 @@ export async function renderPdf(
     y += 8;
   }
 
-  text(fields.date ? "DAILY BREAKDOWN" : "ALL ITEMS", 9, "bold", [113, 113, 122]);
-  y += 4;
-
   if (days.length === 0) {
     text("No work logged in this period.", 10, "normal", [113, 113, 122]);
   }
 
-  for (const d of groupsFor(r, fields)) {
+  // A heading per prose type, skipping any with no rows.
+  for (const type of PROSE_TYPES) {
+  const groups = groupsFor(r, fields, type);
+  if (groups.length === 0) continue;
+  text(ENTRY_TYPE_LABEL[type].toUpperCase(), 9, "bold", [113, 113, 122]);
+  y += 4;
+
+  for (const d of groups) {
     if (d.day !== null) {
       need(34);
       doc.setFont("helvetica", "bold");
@@ -1277,6 +1299,8 @@ export async function renderPdf(
       y += 8;
     }
     y += 6;
+  }
+  y += 6;
   }
 
   // Tabular types: a simple grid. jsPDF has no table engine, so columns get

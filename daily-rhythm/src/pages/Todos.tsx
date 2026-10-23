@@ -1299,6 +1299,7 @@ const TODO_ENTRY_TYPES: Array<{ value: EntryType; label: string }> = [
   { value: "customer_issue", label: "Customer Issue" },
   { value: "bugtracker", label: "Bugtracker" },
   { value: "release", label: "Release" },
+  { value: "other", label: "Other" },
 ];
 
 type TicketDraft = {
