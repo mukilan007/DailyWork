@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { ClipboardList, Download, Pencil, Plus, Trash2 } from "lucide-react";
+import { ClipboardList, Download, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Dialog } from "@/components/ui/Dialog";
@@ -89,6 +89,7 @@ export function WorkLogPage() {
   const [editing, setEditing] = useState<WorkLogEntry | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<WorkLogEntry | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
 
   // Order-corrected window, so a backwards From/To still queries sensibly.
@@ -136,11 +137,22 @@ export function WorkLogPage() {
     return { knownCategories: sorted(cats), knownModules: sorted(mods) };
   }, [entries]);
 
+  /** Entries matching the in-page search. Covers every text field an entry
+   *  carries, so "finance" finds a module and "parser" finds a title. */
+  const matching = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter((e) =>
+      [e.title, e.details, e.module, e.category]
+        .some((v) => (v ?? "").toLowerCase().includes(q))
+    );
+  }, [entries, search]);
+
   // The report normalises rows into generic items; the list needs the real
   // WorkLogEntry (edit/delete act on it), so group separately here.
   const uiDays = useMemo(() => {
     const byDay = new Map<string, WorkLogEntry[]>();
-    for (const e of entries) {
+    for (const e of matching) {
       const list = byDay.get(e.worked_on);
       if (list) list.push(e);
       else byDay.set(e.worked_on, [e]);
@@ -152,12 +164,12 @@ export function WorkLogPage() {
         entries: list,
         minutes: list.reduce((sum, e) => sum + (e.minutes ?? 0), 0),
       }));
-  }, [entries]);
+  }, [matching]);
 
   const report = useMemo(
     () =>
-      buildWorkLogReport(entries, { from: window_.from, to: window_.to }),
-    [entries, window_.from, window_.to]
+      buildWorkLogReport(matching, { from: window_.from, to: window_.to }),
+    [matching, window_.from, window_.to]
   );
 
   async function handleSave(draft: Omit<WorkLogEntry, "id" | "user_id" | "created_at" | "updated_at" | "position">) {
@@ -265,6 +277,31 @@ export function WorkLogPage() {
           </Label>
           <DateField id="wl-to" value={to} onChange={setTo} quickPicks={false} />
         </div>
+        <div className="min-w-[12rem] flex-1 space-y-1">
+          <Label htmlFor="wl-search" className="text-xs text-muted-foreground">
+            Search
+          </Label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              id="wl-search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Task, details, module…"
+              className="h-9 pl-8 pr-8"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
         <div className="flex items-center gap-1.5">
           {PERIOD_PRESETS.map((p) => (
             <button
@@ -306,8 +343,12 @@ export function WorkLogPage() {
       ) : uiDays.length === 0 ? (
         <EmptyState
           icon={<ClipboardList className="h-6 w-6" />}
-          title="Nothing logged in this period"
-          description="Add what you worked on and it'll show up here, grouped by day."
+          title={search ? "No matches" : "Nothing logged in this period"}
+          description={
+            search
+              ? `Nothing in this period matches "${search}".`
+              : "Add what you worked on and it'll show up here, grouped by day."
+          }
           action={
             <Button onClick={startAdd}>
               <Plus className="h-4 w-4" /> Log work

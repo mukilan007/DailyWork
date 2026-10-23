@@ -17,6 +17,8 @@ import {
   Settings,
   ChevronDown,
   Download,
+  Search,
+  X,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -101,6 +103,7 @@ export function TodosPage() {
   const [editing, setEditing] = useState<Todo | null>(null);
   const [repeatsOpen, setRepeatsOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [search, setSearch] = useState("");
 
   // Resolved per-space schema. Inbox has no config row → sensible defaults
   // (no categories, default statuses, no custom fields).
@@ -373,9 +376,17 @@ export function TodosPage() {
         const passRange =
           (!rangeFrom || effectiveDate >= rangeFrom) &&
           (!rangeTo || effectiveDate <= rangeTo);
-        return passDone && passCategory && passStatus && passRange;
+        // Title, body and tags — ticket titles here are often just an id, so
+        // the description has to be searchable for the box to be useful.
+        const q = search.trim().toLowerCase();
+        const passSearch =
+          !q ||
+          [t.title, t.description, ...(t.tags ?? [])].some((v) =>
+            (v ?? "").toLowerCase().includes(q)
+          );
+        return passDone && passCategory && passStatus && passRange && passSearch;
       }),
-    [todos, filter, categoryFilter, statusFilter, rangeFrom, rangeTo, isDone]
+    [todos, filter, categoryFilter, statusFilter, rangeFrom, rangeTo, isDone, search]
   );
 
   /** Active tickets: sort by overdue first, then priority, then due date, then creation. */
@@ -566,6 +577,26 @@ export function TodosPage() {
           ))}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative min-w-[12rem] flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search tickets…"
+              aria-label="Search tickets"
+              className="h-8 pl-8 pr-8 text-xs"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
           {/* `flex-wrap`: the two date inputs plus the arrow and Clear run to
               ~314px, which only just clears a 375px phone — once the category
               and status filters sit alongside them it has to be able to wrap. */}

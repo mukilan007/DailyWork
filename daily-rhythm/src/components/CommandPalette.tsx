@@ -60,7 +60,13 @@ function fuzzyMatch(query: string, candidate: string): boolean {
 // Data search
 // ---------------------------------------------------------------------------
 
-type ResultType = "todo" | "transaction" | "problem" | "note" | "application";
+type ResultType =
+  | "todo"
+  | "worklog"
+  | "transaction"
+  | "problem"
+  | "note"
+  | "application";
 
 interface DataResult {
   key: string;
@@ -71,6 +77,7 @@ interface DataResult {
 
 const TYPE_BADGES: Record<ResultType, { label: string; className: string }> = {
   todo: { label: "Todo", className: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
+  worklog: { label: "Work", className: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300" },
   transaction: { label: "Txn", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" },
   problem: { label: "Problem", className: "bg-amber-500/15 text-amber-700 dark:text-amber-300" },
   note: { label: "Vault", className: "bg-violet-500/15 text-violet-700 dark:text-violet-300" },
@@ -97,13 +104,15 @@ async function searchData(query: string, userId: string): Promise<DataResult[]> 
     }
   };
 
-  const [todos, txns, problems, notes, apps] = await Promise.all([
+  const [todos, work, txns, problems, notes, apps] = await Promise.all([
     safe(
       supabase
         .from("todos")
-        .select("id,title")
+        .select("id,title,description,space_id")
         .eq("user_id", userId)
-        .ilike("title", pattern)
+        // Body text matters as much as the title here — ticket titles are
+        // often just an id, with the detail in the description.
+        .or(`title.ilike.${pattern},description.ilike.${pattern}`)
         .limit(SEARCH_LIMIT)
         .then(({ data, error }) => {
           if (error) throw error;
@@ -111,7 +120,25 @@ async function searchData(query: string, userId: string): Promise<DataResult[]> 
             key: `todo-${r.id}`,
             type: "todo" as const,
             title: r.title,
-            to: "/todos",
+            // Land on the space that holds it, not the spaces index.
+            to: `/todos/${r.space_id ?? "inbox"}`,
+          }));
+        })
+    ),
+    safe(
+      supabase
+        .from("work_log")
+        .select("id,title,details")
+        .eq("user_id", userId)
+        .or(`title.ilike.${pattern},details.ilike.${pattern}`)
+        .limit(SEARCH_LIMIT)
+        .then(({ data, error }) => {
+          if (error) throw error;
+          return (data ?? []).map((r) => ({
+            key: `work-${r.id}`,
+            type: "worklog" as const,
+            title: r.title,
+            to: "/work-log",
           }));
         })
     ),
@@ -185,7 +212,7 @@ async function searchData(query: string, userId: string): Promise<DataResult[]> 
     ),
   ]);
 
-  return [...todos, ...txns, ...problems, ...notes, ...apps];
+  return [...todos, ...work, ...txns, ...problems, ...notes, ...apps];
 }
 
 // ---------------------------------------------------------------------------
