@@ -76,8 +76,19 @@ export const ENTRY_TYPE_LABEL_ONE: Record<EntryType, string> = {
 /** The kinds that read better as a grid than as paragraphs. */
 export const TABLE_TYPES: EntryType[] = ["customer_issue", "bugtracker"];
 
-/** The kinds that read as paragraphs, in the order their sections appear. */
+/** The kinds that read as paragraphs. */
 export const PROSE_TYPES: EntryType[] = ["task", "release", "other"];
+
+/** The order sections appear in the report. Prose and table types interleave,
+ *  so every renderer walks this one list and picks the right shape per type
+ *  rather than emitting all prose and then all tables. */
+export const SECTION_ORDER: EntryType[] = [
+  "release",
+  "task",
+  "customer_issue",
+  "bugtracker",
+  "other",
+];
 
 export function isTableType(t: EntryType): boolean {
   return TABLE_TYPES.includes(t);
@@ -533,17 +544,17 @@ export function renderHtml(r: ReportData, fields: ReportFields = ALL_FIELDS): st
   }
 
   ${
-    // One section per type, and a type with nothing in it contributes no
-    // heading at all rather than an empty block.
-    PROSE_TYPES.map((t) => {
+    // One section per type in SECTION_ORDER, each rendered in its own shape.
+    // A type with nothing in it contributes no heading rather than an empty
+    // block.
+    SECTION_ORDER.map((t) => {
+      if (isTableType(t)) return tableSectionHtml(r, t, fields, "tablewrap");
       const body = daySectionsFor(t);
       return body ? `<h2>${esc(ENTRY_TYPE_LABEL[t])}</h2>\n  ${body}` : "";
     })
       .filter(Boolean)
       .join("\n  ")
   }
-
-  ${TABLE_TYPES.map((t) => tableSectionHtml(r, t, fields, "tablewrap")).join("\n  ")}
 
   ${
     r.days.some((d) => d.entries.length > 0)
@@ -1044,14 +1055,13 @@ export function renderVisualHtml(r: ReportData, fields: ReportFields = ALL_FIELD
       : ""
   }
 
-  ${PROSE_TYPES.map((t) => {
+  ${SECTION_ORDER.map((t) => {
+    if (isTableType(t)) return tableSectionHtml(r, t, fields, "card tablewrap");
     const body = daySectionsFor(t);
     return body ? `<h2>${esc(ENTRY_TYPE_LABEL[t])}</h2>\n  ${body}` : "";
   })
     .filter(Boolean)
-    .join("\n  ")}
-
-  ${TABLE_TYPES.map((t) => tableSectionHtml(r, t, fields, "card tablewrap")).join("\n  ")}`
+    .join("\n  ")}`
   }
 
   <footer>Generated ${esc(new Date().toLocaleString("en-GB"))} · DailyWork</footer>
@@ -1099,8 +1109,26 @@ export function renderMarkdown(r: ReportData, fields: ReportFields = ALL_FIELDS)
     out.push("_No work logged in this period._");
     out.push("");
   }
-  // One heading per prose type; a type with no rows is skipped entirely.
-  for (const type of PROSE_TYPES) {
+  // One heading per type in SECTION_ORDER; a type with no rows is skipped.
+  for (const type of SECTION_ORDER) {
+    if (isTableType(type)) {
+      const rows = itemsOfType(r, type);
+      const cols = tableColumns(r, fields);
+      if (rows.length === 0 || cols.length === 0) continue;
+      out.push(`## ${ENTRY_TYPE_LABEL[type]}`);
+      out.push("");
+      out.push(`| ${cols.map((c) => c.label).join(" | ")} |`);
+      out.push(`| ${cols.map(() => "---").join(" | ")} |`);
+      for (const e of rows) {
+        // Pipes and newlines would break the table, so they are neutralised.
+        const cells = cols.map((c) =>
+          cellText(e, c).replace(/\|/g, "\\|").replace(/\n/g, "<br>")
+        );
+        out.push(`| ${cells.join(" | ")} |`);
+      }
+      out.push("");
+      continue;
+    }
     const groups = groupsFor(r, fields, type);
     if (groups.length === 0) continue;
     out.push(`## ${ENTRY_TYPE_LABEL[type]}`);
@@ -1127,24 +1155,6 @@ export function renderMarkdown(r: ReportData, fields: ReportFields = ALL_FIELDS)
       out.push("");
     }
   }
-  for (const type of TABLE_TYPES) {
-    const rows = itemsOfType(r, type);
-    const cols = tableColumns(r, fields);
-    if (rows.length === 0 || cols.length === 0) continue;
-    out.push("");
-    out.push(`## ${ENTRY_TYPE_LABEL[type]}`);
-    out.push("");
-    out.push(`| ${cols.map((c) => c.label).join(" | ")} |`);
-    out.push(`| ${cols.map(() => "---").join(" | ")} |`);
-    for (const e of rows) {
-      // Pipes and newlines would break the table, so they are neutralised.
-      const cells = cols.map((c) =>
-        cellText(e, c).replace(/\|/g, "\\|").replace(/\n/g, "<br>")
-      );
-      out.push(`| ${cells.join(" | ")} |`);
-    }
-  }
-
   return out.join("\n");
 }
 
@@ -1267,8 +1277,11 @@ export async function renderPdf(
     text("No work logged in this period.", 10, "normal", [113, 113, 122]);
   }
 
-  // A heading per prose type, skipping any with no rows.
-  for (const type of PROSE_TYPES) {
+  // A heading per type in SECTION_ORDER, skipping any with no rows. Tables
+  // are emitted inline by `renderTable` so prose and grids interleave in the
+  // requested order rather than all prose then all tables.
+  for (const type of SECTION_ORDER) {
+  if (isTableType(type)) { renderTable(type); continue; }
   const groups = groupsFor(r, fields, type);
   if (groups.length === 0) continue;
   text(ENTRY_TYPE_LABEL[type].toUpperCase(), 9, "bold", [113, 113, 122]);
@@ -1306,10 +1319,10 @@ export async function renderPdf(
   // Tabular types: a simple grid. jsPDF has no table engine, so columns get
   // fixed widths and cells are clipped to one line — except details, which
   // wraps onto continuation lines beneath its row.
-  for (const type of TABLE_TYPES) {
+  function renderTable(type: EntryType) {
     const rows = itemsOfType(r, type);
     const cols = tableColumns(r, fields).filter((c) => c.key !== "details");
-    if (rows.length === 0) continue;
+    if (rows.length === 0) return;
     const wantDetails = fields.details;
 
     y += 14;
