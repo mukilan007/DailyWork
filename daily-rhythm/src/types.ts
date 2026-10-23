@@ -470,7 +470,7 @@ export type WorkLogStatus =
 
 /** What kind of record this is. Drives how the report presents it: tasks read
  *  as prose, issues and bugs as tables. */
-export type EntryType = "task" | "customer_issue" | "bugtracker";
+export type EntryType = "task" | "customer_issue" | "bugtracker" | "release";
 
 export type WorkLogEntry = {
   id: string;

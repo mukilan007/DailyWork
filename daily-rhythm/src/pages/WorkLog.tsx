@@ -47,6 +47,7 @@ const ENTRY_TYPES: Array<{ value: EntryType; label: string }> = [
   { value: "task", label: "Task" },
   { value: "customer_issue", label: "Customer Issue" },
   { value: "bugtracker", label: "Bugtracker" },
+  { value: "release", label: "Release" },
 ];
 
 /** Badge tint per state. Terminal states lean green, work-in-flight blue,

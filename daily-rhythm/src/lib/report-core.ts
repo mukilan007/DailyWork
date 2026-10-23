@@ -60,6 +60,7 @@ export const ENTRY_TYPE_LABEL: Record<EntryType, string> = {
   task: "Tasks",
   customer_issue: "Customer Issues",
   bugtracker: "Bugtracker",
+  release: "Releases",
 };
 
 /** Row-level label, for a single record (CSV's `type` column). */
@@ -67,10 +68,16 @@ export const ENTRY_TYPE_LABEL_ONE: Record<EntryType, string> = {
   task: "Task",
   customer_issue: "Customer Issue",
   bugtracker: "Bugtracker",
+  release: "Release",
 };
 
-/** The two kinds that read better as a grid than as paragraphs. */
+/** The kinds that read better as a grid than as paragraphs. Everything else
+ *  — tasks and releases — renders as prose in the day-by-day section. */
 export const TABLE_TYPES: EntryType[] = ["customer_issue", "bugtracker"];
+
+export function isTableType(t: EntryType): boolean {
+  return TABLE_TYPES.includes(t);
+}
 
 /** Which per-item fields the reader asked for. Everything is optional,
  *  including the task name and the date — a section whose whole dimension is
@@ -281,7 +288,7 @@ function groupsFor(
   r: ReportData,
   fields: ReportFields
 ): Array<{ day: string | null; entries: ReportItem[]; minutes: number }> {
-  const keep = (list: ReportItem[]) => list.filter((e) => e.entryType === "task");
+  const keep = (list: ReportItem[]) => list.filter((e) => !isTableType(e.entryType));
   if (fields.date) {
     return r.days
       .map((d) => ({ ...d, entries: keep(d.entries) }))
